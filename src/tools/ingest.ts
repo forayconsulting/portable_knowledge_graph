@@ -10,24 +10,29 @@ export function registerIngestTool(server: McpServer, env: Env) {
 
 	server.tool(
 		"ingest",
-		`Bulk write entities or relationships into the knowledge graph.
+		`Bulk create entities and relationships. Use this instead of calling entity(create) in a loop.
 
-This is the high-throughput ingestion path. Use it when you have multiple entities or
-relationships to create at once — it batches statements for efficiency.
+WHEN TO USE: Whenever you need to create more than 2-3 entities. This batches operations for efficiency.
 
-IMPORTANT: YOU are responsible for ALL semantic processing BEFORE calling this tool:
-- Extract concepts, facts, and entities from source material
-- Determine entity types, names, summaries
-- Decide which relationships exist and their types
-- Choose appropriate tags for each entity
-- Assign to the correct namespace
+ACTIONS:
+- entities: Create multiple entities at once. Each can include tags inline. Uses MERGE so re-running is safe (upserts).
+- relationships: Create multiple typed relationships between existing entities. Entities must already exist by ID or name.
 
-The server writes exactly what you provide, in batches of ${BATCH_SIZE} statements.
-It does no concept extraction, no NLP, no semantic analysis.
+WORKFLOW FOR DOCUMENT INGESTION:
+1. Call ontology(describe) ONCE to see existing types. Do not call it repeatedly.
+2. If you need new entity types or relationship types, create them all in one ontology(batch_create) call.
+3. Read/analyze the source material yourself. Extract entities, concepts, facts, relationships.
+4. Call ingest(entities) with ALL your extracted entities in a single call. Include tags inline per entity.
+5. Call ingest(relationships) with ALL relationships in a single call.
+6. Optionally create a Source record and link entities to it for provenance.
 
-Actions:
-- entities: Batch create/upsert entities with optional tags
-- relationships: Batch create typed relationships between existing entities`,
+ENTITY FORMAT: Each entity needs at minimum: name (string) and entity_type (string matching an existing type).
+Optional: namespace, summary, content, properties (flat key-value object with string/number values), tags (array of tag name strings).
+
+RELATIONSHIP FORMAT: Each needs: from_id or from_name, to_id or to_name, relationship_type (string matching an existing type).
+Optional: weight (float, default 1.0), properties (flat key-value object).
+
+IMPORTANT: The properties field accepts an object like {"key": "value"} but values must be primitives (strings, numbers). No nested objects.`,
 		{
 			action: z.enum(["entities", "relationships"]),
 			entities: z
@@ -112,7 +117,9 @@ Actions:
 									namespace: e.namespace ?? params.namespace ?? null,
 									summary: e.summary ?? null,
 									content: e.content ?? null,
-									properties: e.properties ?? {},
+									properties: e.properties
+										? JSON.stringify(e.properties)
+										: null,
 									created_by: params.created_by,
 								},
 							});
@@ -180,7 +187,9 @@ Actions:
 									to_name: r.to_name ?? null,
 									rel_type: r.relationship_type,
 									weight: r.weight ?? 1.0,
-									properties: r.properties ?? {},
+									properties: r.properties
+										? JSON.stringify(r.properties)
+										: null,
 									created_by: params.created_by,
 								},
 							};

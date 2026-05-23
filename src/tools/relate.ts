@@ -96,7 +96,9 @@ structural similarity. Or create SIMILAR_TO directly here if YOU have determined
 								to_id: params.to_id,
 								rel_type: params.relationship_type,
 								weight: params.weight,
-								properties: params.properties ?? {},
+								properties: params.properties
+									? JSON.stringify(params.properties)
+									: null,
 								created_by: params.created_by,
 							},
 						);

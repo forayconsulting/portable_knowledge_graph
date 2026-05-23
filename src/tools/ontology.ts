@@ -1,33 +1,37 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { Neo4jClient } from "../neo4j/client";
+import type { Neo4jStatement } from "../neo4j/types";
 
 export function registerOntologyTool(server: McpServer, env: Env) {
 	const neo4j = new Neo4jClient(env);
 
 	server.tool(
 		"ontology",
-		`View and manage the graph's self-describing schema.
+		`View and manage the graph's schema. Call describe ONCE at the start of any ingestion to see what types exist.
 
-The ontology is stored IN the graph as __Schema nodes. This is how you learn what the graph
-contains and how to extend it for new domains.
+ACTIONS:
+- describe: Returns all entity types, relationship types, tag groups, and namespaces with instance counts. Call this FIRST before creating anything.
+- batch_create: Create multiple entity types, relationship types, tag groups, and/or a namespace in ONE call. Use this instead of calling create_type repeatedly.
+- create_type: Create a single entity type. Prefer batch_create when adding more than one.
+- create_rel_type: Create a single relationship type. Prefer batch_create when adding more than one.
+- create_tag_group: Create a single tag group.
+- create_namespace: Create a single namespace.
 
-Actions:
-- describe: Full schema dump — all entity types, relationship types, tag groups, namespaces,
-  each with a count of how many instances exist. START HERE to understand the graph.
-- create_type: Define a new entity type (e.g., "Person", "Project", "Bug Report")
-- create_rel_type: Define a new relationship type (e.g., "EMPLOYS", "BLOCKS", "AUTHORED")
-- create_tag_group: Define a new tag grouping (e.g., "technology", "priority", "status")
-- create_namespace: Define a new workspace partition
+TYPICAL INGESTION WORKFLOW:
+1. Call ontology(describe) once. Review the existing types.
+2. Decide which new types you need (if any). Many documents fit the built-in types: Concept, Document, Fact, Note.
+3. If you need new types, call ontology(batch_create) with ALL new types in one call.
+4. Proceed to ingest(entities) and ingest(relationships).
 
-When YOU need to ingest knowledge for a new domain:
-1. Call ontology(describe) to see what exists
-2. Determine what new types are needed
-3. Call create_type/create_rel_type to extend the schema
-4. Then use entity/relate/ingest to add data using your new types`,
+DO NOT call create_type or create_rel_type in a loop. Use batch_create to create everything at once.
+
+BUILT-IN ENTITY TYPES: Concept, Document, Fact, Note
+BUILT-IN RELATIONSHIP TYPES: CONTAINS, REFERENCES, SUPPORTS, CONTRADICTS, DEPENDS_ON, CAUSED_BY, PRECEDES`,
 		{
 			action: z.enum([
 				"describe",
+				"batch_create",
 				"create_type",
 				"create_rel_type",
 				"create_tag_group",
@@ -36,7 +40,7 @@ When YOU need to ingest knowledge for a new domain:
 			name: z
 				.string()
 				.optional()
-				.describe("Name for the new type/group/namespace"),
+				.describe("Name for a single type/group/namespace"),
 			description: z.string().optional().describe("Description"),
 			property_hints: z
 				.string()
@@ -50,6 +54,44 @@ When YOU need to ingest knowledge for a new domain:
 				.array(z.string())
 				.optional()
 				.describe("Allowed target entity types (for rel types)"),
+			entity_types: z
+				.array(
+					z.object({
+						name: z.string(),
+						description: z.string().optional(),
+						property_hints: z.string().optional(),
+					}),
+				)
+				.optional()
+				.describe("Entity types to create (for batch_create)"),
+			rel_types: z
+				.array(
+					z.object({
+						name: z.string(),
+						description: z.string().optional(),
+						from_types: z.array(z.string()).optional(),
+						to_types: z.array(z.string()).optional(),
+					}),
+				)
+				.optional()
+				.describe("Relationship types to create (for batch_create)"),
+			tag_groups: z
+				.array(
+					z.object({
+						name: z.string(),
+						description: z.string().optional(),
+					}),
+				)
+				.optional()
+				.describe("Tag groups to create (for batch_create)"),
+			namespace_name: z
+				.string()
+				.optional()
+				.describe("Namespace to create (for batch_create)"),
+			namespace_description: z
+				.string()
+				.optional()
+				.describe("Namespace description (for batch_create)"),
 		},
 		async (params) => {
 			try {
@@ -147,6 +189,94 @@ When YOU need to ingest knowledge for a new domain:
 										null,
 										2,
 									),
+								},
+							],
+						};
+					}
+
+					case "batch_create": {
+						const stmts: Neo4jStatement[] = [];
+						const created: Array<{ type: string; name: string }> = [];
+
+						for (const et of params.entity_types ?? []) {
+							stmts.push({
+								statement: `MERGE (m:__Schema:EntityType {name: $name})
+                  SET m.description = $description,
+                      m.property_hints = $property_hints,
+                      m.created_at = coalesce(m.created_at, datetime())`,
+								parameters: {
+									name: et.name,
+									description: et.description ?? "",
+									property_hints: et.property_hints ?? "",
+								},
+							});
+							created.push({ type: "EntityType", name: et.name });
+						}
+						for (const rt of params.rel_types ?? []) {
+							stmts.push({
+								statement: `MERGE (m:__Schema:RelType {name: $name})
+                  SET m.description = $description,
+                      m.from_types = $from_types,
+                      m.to_types = $to_types,
+                      m.created_at = coalesce(m.created_at, datetime())`,
+								parameters: {
+									name: rt.name,
+									description: rt.description ?? "",
+									from_types: rt.from_types ?? ["*"],
+									to_types: rt.to_types ?? ["*"],
+								},
+							});
+							created.push({ type: "RelType", name: rt.name });
+						}
+						for (const tg of params.tag_groups ?? []) {
+							stmts.push({
+								statement: `MERGE (m:__Schema:TagGroup {name: $name})
+                  SET m.description = $description,
+                      m.created_at = coalesce(m.created_at, datetime())`,
+								parameters: {
+									name: tg.name,
+									description: tg.description ?? "",
+								},
+							});
+							created.push({ type: "TagGroup", name: tg.name });
+						}
+						if (params.namespace_name) {
+							stmts.push({
+								statement: `MERGE (m:__Schema:Namespace {name: $name})
+                  SET m.description = $description,
+                      m.created_at = coalesce(m.created_at, datetime())`,
+								parameters: {
+									name: params.namespace_name,
+									description: params.namespace_description ?? "",
+								},
+							});
+							created.push({
+								type: "Namespace",
+								name: params.namespace_name,
+							});
+						}
+
+						if (!stmts.length)
+							return {
+								content: [
+									{
+										type: "text" as const,
+										text: "Error: provide entity_types, rel_types, tag_groups, or namespace_name",
+									},
+								],
+								isError: true,
+							};
+
+						await neo4j.execute(stmts);
+						return {
+							content: [
+								{
+									type: "text" as const,
+									text: JSON.stringify({
+										created: true,
+										count: created.length,
+										items: created,
+									}),
 								},
 							],
 						};

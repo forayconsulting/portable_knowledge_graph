@@ -7,23 +7,24 @@ export function registerEntityTool(server: McpServer, env: Env) {
 
 	server.tool(
 		"entity",
-		`Create, read, update, delete, or list entities in the knowledge graph.
+		`CRUD operations for entities. Use this for individual entity operations. For bulk creation, use the ingest tool instead.
 
-Entities are the universal node type. Every piece of knowledge is an Entity with:
-- entity_type: what kind of thing it is (must match a __Schema:EntityType, e.g., "Concept", "Document", "Fact", "Note")
-- namespace: optional workspace partition for organizing domains
-- name: human-readable label (full-text indexed)
-- summary: short description (full-text indexed)
-- content: full text body (full-text indexed)
-- properties: arbitrary key-value map for domain-specific fields
+ACTIONS:
+- create: Make a new entity. Requires name and entity_type at minimum. Returns the generated UUID.
+- get: Fetch a single entity by ID with all its tags and sources.
+- update: Modify fields on an existing entity. Only sends the fields you include.
+- delete: Remove an entity and all its relationships.
+- list: Browse entities with optional filters. Paginated.
 
-On CREATE, YOU are responsible for:
-- Choosing the correct entity_type from the ontology
-- Writing a clear name and summary
-- Extracting structured properties from your source material
-- Deciding which namespace to place it in
+ENTITY STRUCTURE:
+- name: Human-readable label. This is full-text indexed so make it descriptive and searchable.
+- entity_type: Must reference an existing __Schema:EntityType (e.g., "Concept", "Document", "Fact", "Note"). Call ontology(describe) first if you are unsure what types exist.
+- namespace: Groups entities into a workspace. Use lowercase-hyphenated names like "engineering-docs" or "customer-research".
+- summary: One to two sentence description. Full-text indexed. Keep it concise but informative.
+- content: Long-form text body. Full-text indexed. Use for document text, detailed notes, etc.
+- properties: Optional JSON object for structured metadata. Stored as a JSON string internally. Use flat key-value pairs with string/number values. Example: {"author": "Jane Smith", "year": 2024, "pages": 312}
 
-The server writes exactly what you provide — it does no semantic processing.`,
+IMPORTANT: You do not need to create entity types before creating entities if the type already exists. Call ontology(describe) once at the start to see available types. Only create new types if no existing type fits.`,
 		{
 			action: z.enum(["create", "get", "update", "delete", "list"]),
 			id: z
@@ -43,7 +44,9 @@ The server writes exactly what you provide — it does no semantic processing.`,
 			properties: z
 				.record(z.string(), z.unknown())
 				.optional()
-				.describe("Arbitrary key-value properties"),
+				.describe(
+					'Structured metadata as flat key-value pairs. Values must be strings or numbers. Example: {"author": "Jane Smith", "year": 2024}. Stored as JSON string internally.',
+				),
 			created_by: z
 				.string()
 				.optional()
@@ -80,7 +83,9 @@ The server writes exactly what you provide — it does no semantic processing.`,
 								namespace: params.namespace ?? null,
 								summary: params.summary ?? null,
 								content: params.content ?? null,
-								properties: params.properties ?? {},
+								properties: params.properties
+									? JSON.stringify(params.properties)
+									: null,
 								created_by: params.created_by,
 							},
 						);
@@ -172,7 +177,7 @@ The server writes exactly what you provide — it does no semantic processing.`,
 						}
 						if (params.properties !== undefined) {
 							sets.push("e.properties = $properties");
-							p.properties = params.properties;
+							p.properties = JSON.stringify(params.properties);
 						}
 						await neo4j.query(
 							`MATCH (e:Entity {id: $id}) SET ${sets.join(", ")} RETURN e.id`,
