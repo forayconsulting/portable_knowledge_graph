@@ -1,0 +1,6 @@
+# Neo4j connection (Railway)
+NEO4J_URL=https://your-neo4j-host.up.railway.app/db/neo4j/tx/commit
+NEO4J_AUTH=neo4j:your-password-here
+
+# MCP server access control
+API_SECRET=generate-with-openssl-rand-hex-32

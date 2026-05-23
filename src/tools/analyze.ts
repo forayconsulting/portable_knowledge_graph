@@ -1,0 +1,260 @@
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { z } from "zod";
+import { Neo4jClient } from "../neo4j/client";
+
+export function registerAnalyzeTool(server: McpServer, env: Env) {
+	const neo4j = new Neo4jClient(env);
+
+	server.tool(
+		"analyze",
+		`Run structural graph analytics. No AI — just Cypher-based analysis.
+
+Actions:
+- stats: Full graph statistics (node/edge counts by type, namespace, top tags)
+- shortest_path: Find shortest path between two entities
+- neighbors: Degree analysis — which entities have the most connections
+- find_similar: Find entities sharing N+ tags (structural similarity)
+
+These are structural queries. For SEMANTIC similarity (meaning-based), YOU must determine
+similarity yourself and write SIMILAR_TO edges via the relate tool.`,
+		{
+			action: z.enum(["stats", "shortest_path", "neighbors", "find_similar"]),
+			from_id: z.string().optional().describe("Start entity for shortest_path"),
+			to_id: z.string().optional().describe("End entity for shortest_path"),
+			max_depth: z.number().optional().default(10).describe("Max path length"),
+			entity_type: z
+				.string()
+				.optional()
+				.describe("Filter by entity type (neighbors)"),
+			namespace: z.string().optional().describe("Filter by namespace"),
+			entity_id: z
+				.string()
+				.optional()
+				.describe("Entity to find similar entities for"),
+			min_shared_tags: z
+				.number()
+				.optional()
+				.default(2)
+				.describe("Minimum shared tags for find_similar"),
+			limit: z.number().optional().default(20),
+		},
+		async (params) => {
+			try {
+				switch (params.action) {
+					case "stats": {
+						const result = await neo4j.execute([
+							{
+								statement: `MATCH (e:Entity)
+                  WITH e.entity_type AS type, count(e) AS cnt
+                  RETURN type, cnt ORDER BY cnt DESC`,
+							},
+							{
+								statement: `MATCH ()-[r:RELATES_TO]->()
+                  WITH r.type AS type, count(r) AS cnt
+                  RETURN type, cnt ORDER BY cnt DESC`,
+							},
+							{
+								statement: `MATCH (t:Tag)<-[:TAGGED_WITH]-(e:Entity)
+                  WITH t.name AS tag, t.tag_group AS grp, count(e) AS cnt
+                  RETURN tag, grp, cnt ORDER BY cnt DESC LIMIT 50`,
+							},
+							{
+								statement: `MATCH (e:Entity) WHERE e.namespace IS NOT NULL
+                  WITH e.namespace AS ns, count(e) AS cnt
+                  RETURN ns, cnt ORDER BY cnt DESC`,
+							},
+							{
+								statement: `MATCH (n) RETURN count(n) AS total_nodes
+                  UNION ALL MATCH ()-[r]->() RETURN count(r) AS total_nodes`,
+							},
+						]);
+
+						return {
+							content: [
+								{
+									type: "text" as const,
+									text: JSON.stringify(
+										{
+											entities_by_type: neo4j
+												.rows(result, 0)
+												.map(([t, c]) => ({ type: t, count: c })),
+											relationships_by_type: neo4j
+												.rows(result, 1)
+												.map(([t, c]) => ({ type: t, count: c })),
+											top_tags: neo4j
+												.rows(result, 2)
+												.map(([t, g, c]) => ({ tag: t, group: g, count: c })),
+											namespaces: neo4j
+												.rows(result, 3)
+												.map(([n, c]) => ({ namespace: n, count: c })),
+											totals: {
+												nodes: neo4j.rows(result, 4)[0]?.[0] ?? 0,
+												edges: neo4j.rows(result, 4)[1]?.[0] ?? 0,
+											},
+										},
+										null,
+										2,
+									),
+								},
+							],
+						};
+					}
+
+					case "shortest_path": {
+						if (!params.from_id || !params.to_id)
+							return {
+								content: [
+									{
+										type: "text" as const,
+										text: "Error: from_id and to_id are required",
+									},
+								],
+								isError: true,
+							};
+						const rows = await neo4j.query(
+							`MATCH (a:Entity {id: $from_id}), (b:Entity {id: $to_id}),
+                     path = shortestPath((a)-[*..${Math.min(params.max_depth, 15)}]-(b))
+               RETURN [n IN nodes(path) | {
+                 id: coalesce(n.id, n.name),
+                 name: coalesce(n.name, ''),
+                 label: head(labels(n))
+               }] AS nodes,
+               [r IN relationships(path) | {
+                 type: type(r),
+                 rel_type: CASE WHEN type(r) = 'RELATES_TO' THEN r.type ELSE type(r) END
+               }] AS edges,
+               length(path) AS hops`,
+							{ from_id: params.from_id, to_id: params.to_id },
+						);
+						if (!rows.length)
+							return {
+								content: [
+									{
+										type: "text" as const,
+										text: JSON.stringify({
+											found: false,
+											message: "No path exists",
+										}),
+									},
+								],
+							};
+						return {
+							content: [
+								{
+									type: "text" as const,
+									text: JSON.stringify(
+										{
+											found: true,
+											hops: rows[0][2],
+											nodes: rows[0][0],
+											edges: rows[0][1],
+										},
+										null,
+										2,
+									),
+								},
+							],
+						};
+					}
+
+					case "neighbors": {
+						const rows = await neo4j.query(
+							`MATCH (e:Entity)
+               WHERE ($entity_type IS NULL OR e.entity_type = $entity_type)
+                 AND ($namespace IS NULL OR e.namespace = $namespace)
+               OPTIONAL MATCH (e)-[r]-()
+               WITH e, count(r) AS degree
+               RETURN e.id, e.name, e.entity_type, e.namespace, degree
+               ORDER BY degree DESC
+               LIMIT $limit`,
+							{
+								entity_type: params.entity_type ?? null,
+								namespace: params.namespace ?? null,
+								limit: params.limit,
+							},
+						);
+						return {
+							content: [
+								{
+									type: "text" as const,
+									text: JSON.stringify(
+										rows.map(([id, name, type, ns, degree]) => ({
+											id,
+											name,
+											entity_type: type,
+											namespace: ns,
+											degree,
+										})),
+										null,
+										2,
+									),
+								},
+							],
+						};
+					}
+
+					case "find_similar": {
+						if (!params.entity_id)
+							return {
+								content: [
+									{
+										type: "text" as const,
+										text: "Error: entity_id is required for find_similar",
+									},
+								],
+								isError: true,
+							};
+						const rows = await neo4j.query(
+							`MATCH (e:Entity {id: $entity_id})-[:TAGGED_WITH]->(t:Tag)<-[:TAGGED_WITH]-(other:Entity)
+               WHERE other.id <> $entity_id
+               WITH other, collect(DISTINCT t.name) AS shared_tags, count(DISTINCT t) AS shared_count
+               WHERE shared_count >= $min_shared
+               OPTIONAL MATCH (other)-[:TAGGED_WITH]->(ot:Tag)
+               WITH other, shared_tags, shared_count, count(DISTINCT ot) AS total_tags
+               RETURN other.id, other.name, other.entity_type, other.namespace,
+                      shared_tags, shared_count,
+                      toFloat(shared_count) / toFloat(total_tags) AS similarity
+               ORDER BY shared_count DESC, similarity DESC
+               LIMIT $limit`,
+							{
+								entity_id: params.entity_id,
+								min_shared: params.min_shared_tags,
+								limit: params.limit,
+							},
+						);
+						return {
+							content: [
+								{
+									type: "text" as const,
+									text: JSON.stringify(
+										rows.map(([id, name, type, ns, tags, count, sim]) => ({
+											id,
+											name,
+											entity_type: type,
+											namespace: ns,
+											shared_tags: tags,
+											shared_count: count,
+											similarity: sim,
+										})),
+										null,
+										2,
+									),
+								},
+							],
+						};
+					}
+				}
+			} catch (error) {
+				return {
+					content: [
+						{
+							type: "text" as const,
+							text: `Analyze error: ${error instanceof Error ? error.message : String(error)}`,
+						},
+					],
+					isError: true,
+				};
+			}
+		},
+	);
+}
