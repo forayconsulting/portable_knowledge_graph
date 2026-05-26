@@ -14,11 +14,12 @@ Actions:
 - shortest_path: Find shortest path between two entities
 - neighbors: Degree analysis — which entities have the most connections
 - find_similar: Find entities sharing N+ tags (structural similarity)
+- epistemic_gaps: Find provisional entities with no SOURCED_FROM edge — candidates for verification
 
 These are structural queries. For SEMANTIC similarity (meaning-based), YOU must determine
 similarity yourself and write SIMILAR_TO edges via the relate tool.`,
 		{
-			action: z.enum(["stats", "shortest_path", "neighbors", "find_similar"]),
+			action: z.enum(["stats", "shortest_path", "neighbors", "find_similar", "epistemic_gaps"]),
 			from_id: z.string().optional().describe("Start entity for shortest_path"),
 			to_id: z.string().optional().describe("End entity for shortest_path"),
 			max_depth: z.number().optional().default(10).describe("Max path length"),
@@ -235,6 +236,45 @@ similarity yourself and write SIMILAR_TO edges via the relate tool.`,
 											shared_tags: tags,
 											shared_count: count,
 											similarity: sim,
+										})),
+										null,
+										2,
+									),
+								},
+							],
+						};
+					}
+
+					case "epistemic_gaps": {
+						const gapRows = await neo4j.query(
+							`MATCH (e:Entity)
+               WHERE e.epistemic_status = "provisional"
+                 AND NOT (e)-[:SOURCED_FROM]->(:Source)
+                 AND ($namespace IS NULL OR e.namespace = $namespace)
+               RETURN e.id, e.name, e.entity_type, e.namespace,
+                      e.epistemic_status, e.confidence, e.assessed_by,
+                      e.created_at
+               ORDER BY e.created_at ASC
+               LIMIT $limit`,
+							{
+								namespace: params.namespace ?? null,
+								limit: params.limit,
+							},
+						);
+						return {
+							content: [
+								{
+									type: "text" as const,
+									text: JSON.stringify(
+										gapRows.map(([id, name, type, ns, status, conf, assessor, created]) => ({
+											id,
+											name,
+											entity_type: type,
+											namespace: ns,
+											epistemic_status: status,
+											confidence: conf,
+											assessed_by: assessor,
+											created_at: created,
 										})),
 										null,
 										2,

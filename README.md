@@ -20,6 +20,8 @@ The graph is empty until you need it to not be. Ask Claude to ingest a research 
 
 **Namespaces keep things organized without keeping them separate.** One graph instance can hold engineering docs, customer research, competitive analysis, project notes. Each lives in its own namespace. Queries can stay scoped or reach across boundaries when that's useful.
 
+**Every entity tracks its own epistemic status.** Each node carries three fields: `epistemic_status` (grounded, provisional, speculative, or contested), `confidence` (0.0–1.0), and `assessed_by` (who made the assessment). These are set automatically during ingestion based on caller-supplied values or sensible defaults, and can be queried structurally — `analyze(epistemic_gaps)` finds provisional entities with no source provenance, surfacing the weakest links in your knowledge base.
+
 ## What's inside
 
 Ten tools that cover the full lifecycle of knowledge:
@@ -28,7 +30,7 @@ Ten tools that cover the full lifecycle of knowledge:
 - **entity** and **relate** for reading and writing nodes and edges
 - **ingest** for bulk operations
 - **ontology** for schema introspection and extension
-- **analyze** for structural queries (shortest paths, similarity, degree analysis)
+- **analyze** for structural queries (shortest paths, similarity, degree analysis, epistemic gaps)
 - **source** for tracking where knowledge came from
 - **namespace** for workspace management
 - **admin** for health checks and raw Cypher when you need it

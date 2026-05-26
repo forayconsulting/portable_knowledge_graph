@@ -23,6 +23,9 @@ ENTITY STRUCTURE:
 - summary: One to two sentence description. Full-text indexed. Keep it concise but informative.
 - content: Long-form text body. Full-text indexed. Use for document text, detailed notes, etc.
 - properties: Optional JSON object for structured metadata. Stored as a JSON string internally. Use flat key-value pairs with string/number values. Example: {"author": "Jane Smith", "year": 2024, "pages": 312}
+- epistemic_status: One of "grounded", "provisional", "speculative", "contested". Defaults to "provisional".
+- confidence: Float from 0.0 to 1.0. Defaults to 0.5.
+- assessed_by: Who assessed the epistemic status. Defaults to the value of created_by.
 
 IMPORTANT: You do not need to create entity types before creating entities if the type already exists. Call ontology(describe) once at the start to see available types. Only create new types if no existing type fits.`,
 		{
@@ -47,6 +50,22 @@ IMPORTANT: You do not need to create entity types before creating entities if th
 				.describe(
 					'Structured metadata as flat key-value pairs. Values must be strings or numbers. Example: {"author": "Jane Smith", "year": 2024}. Stored as JSON string internally.',
 				),
+			epistemic_status: z
+				.enum(["grounded", "provisional", "speculative", "contested"])
+				.optional()
+				.default("provisional")
+				.describe("Epistemic status: grounded, provisional, speculative, or contested"),
+			confidence: z
+				.number()
+				.min(0)
+				.max(1)
+				.optional()
+				.default(0.5)
+				.describe("Confidence score from 0.0 to 1.0"),
+			assessed_by: z
+				.string()
+				.optional()
+				.describe("Who assessed the epistemic status (defaults to created_by)"),
 			created_by: z
 				.string()
 				.optional()
@@ -73,6 +92,8 @@ IMPORTANT: You do not need to create entity types before creating entities if th
                 id: $id, name: $name, entity_type: $entity_type,
                 namespace: $namespace, summary: $summary, content: $content,
                 properties: $properties, created_by: $created_by,
+                epistemic_status: $epistemic_status, confidence: $confidence,
+                assessed_by: $assessed_by,
                 created_at: datetime(), updated_at: datetime()
               })
               RETURN e.id`,
@@ -87,6 +108,9 @@ IMPORTANT: You do not need to create entity types before creating entities if th
 									? JSON.stringify(params.properties)
 									: null,
 								created_by: params.created_by,
+								epistemic_status: params.epistemic_status,
+								confidence: params.confidence,
+								assessed_by: params.assessed_by ?? params.created_by,
 							},
 						);
 						return {
@@ -178,6 +202,18 @@ IMPORTANT: You do not need to create entity types before creating entities if th
 						if (params.properties !== undefined) {
 							sets.push("e.properties = $properties");
 							p.properties = JSON.stringify(params.properties);
+						}
+						if (params.epistemic_status !== undefined) {
+							sets.push("e.epistemic_status = $epistemic_status");
+							p.epistemic_status = params.epistemic_status;
+						}
+						if (params.confidence !== undefined) {
+							sets.push("e.confidence = $confidence");
+							p.confidence = params.confidence;
+						}
+						if (params.assessed_by !== undefined) {
+							sets.push("e.assessed_by = $assessed_by");
+							p.assessed_by = params.assessed_by;
 						}
 						await neo4j.query(
 							`MATCH (e:Entity {id: $id}) SET ${sets.join(", ")} RETURN e.id`,

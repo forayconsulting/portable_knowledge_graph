@@ -8,7 +8,7 @@ const GUIDE_CONTENT = `# Knowledge Graph Guide
 This is a use-case agnostic knowledge graph. All knowledge is stored as **Entity** nodes with typed relationships.
 
 ### Node Types
-- **Entity**: Universal knowledge node. Has entity_type, namespace, name, summary, content, properties.
+- **Entity**: Universal knowledge node. Has entity_type, namespace, name, summary, content, properties, epistemic_status, confidence, assessed_by.
 - **Tag**: Classification label. Shared across entities via TAGGED_WITH edges.
 - **Source**: Provenance record. Linked via SOURCED_FROM edges with confidence scores.
 - **__Schema**: Meta-nodes describing the ontology (EntityType, RelType, TagGroup, Namespace).
@@ -49,6 +49,18 @@ Entities can belong to a namespace (workspace partition). Use namespaces to orga
 2. Identify gaps for your new domain
 3. Create entity types, relationship types, tag groups, and namespaces as needed
 4. Start ingesting data using your new types
+
+## Epistemic Status Convention
+Every Entity carries three epistemic fields:
+- **epistemic_status** (string): One of "grounded", "provisional", "speculative", "contested". Defaults to "provisional".
+- **confidence** (float): 0.0 to 1.0. Defaults to 0.5.
+- **assessed_by** (string): Who made the epistemic assessment — an LLM session, human, or pipeline. Defaults to the entity's created_by value.
+
+Status definitions:
+- **grounded**: Multiple corroborating sources or direct evidence support this entity.
+- **provisional**: Single-source and unverified.
+- **speculative**: Inferred or weakly supported; based on reasoning rather than direct evidence.
+- **contested**: Sources actively disagree about this entity's claims or classification.
 
 ## Conventions
 - Entity IDs are UUIDs (auto-generated if omitted)

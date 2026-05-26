@@ -30,6 +30,10 @@ export const BOOTSTRAP_INDEXES: Neo4jStatement[] = [
 	},
 	{
 		statement:
+			"CREATE INDEX entity_epistemic IF NOT EXISTS FOR (e:Entity) ON (e.epistemic_status)",
+	},
+	{
+		statement:
 			"CREATE INDEX tag_group IF NOT EXISTS FOR (t:Tag) ON (t.tag_group)",
 	},
 	{

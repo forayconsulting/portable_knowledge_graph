@@ -18,11 +18,19 @@ ACTIONS:
 - entities: Create multiple entities at once. Each can include tags inline. Uses MERGE so re-running is safe (upserts).
 - relationships: Create multiple typed relationships between existing entities. Entities must already exist by ID or name.
 
+EPISTEMIC STATUS VALUES:
+- grounded: Multiple corroborating sources or direct evidence support this entity.
+- provisional: Single-source and unverified; the default for newly ingested entities.
+- speculative: Inferred or weakly supported; based on reasoning rather than direct evidence.
+- contested: Sources actively disagree about this entity's claims or classification.
+
+Set epistemic_status and confidence per entity. If omitted, defaults to provisional / 0.5. The assessed_by field records who made the assessment (defaults to the ingest call's created_by).
+
 WORKFLOW FOR DOCUMENT INGESTION:
 1. Call ontology(describe) ONCE to see existing types. Do not call it repeatedly.
 2. If you need new entity types or relationship types, create them all in one ontology(batch_create) call.
 3. Read/analyze the source material yourself. Extract entities, concepts, facts, relationships.
-4. Call ingest(entities) with ALL your extracted entities in a single call. Include tags inline per entity.
+4. Call ingest(entities) with ALL your extracted entities in a single call. Include tags inline per entity. Assign epistemic_status based on source quality.
 5. Call ingest(relationships) with ALL relationships in a single call.
 6. Optionally create a Source record and link entities to it for provenance.
 
@@ -48,6 +56,22 @@ IMPORTANT: The properties field accepts an object like {"key": "value"} but valu
 						summary: z.string().optional(),
 						content: z.string().optional(),
 						properties: z.record(z.string(), z.unknown()).optional(),
+						epistemic_status: z
+							.enum(["grounded", "provisional", "speculative", "contested"])
+							.optional()
+							.default("provisional")
+							.describe("Epistemic status"),
+						confidence: z
+							.number()
+							.min(0)
+							.max(1)
+							.optional()
+							.default(0.5)
+							.describe("Confidence score 0.0-1.0"),
+						assessed_by: z
+							.string()
+							.optional()
+							.describe("Who assessed epistemic status (defaults to created_by)"),
 						tags: z
 							.array(z.string())
 							.optional()
@@ -107,6 +131,9 @@ IMPORTANT: The properties field accepts an object like {"key": "value"} but valu
                       e.namespace = $namespace, e.summary = $summary,
                       e.content = $content, e.properties = $properties,
                       e.created_by = $created_by,
+                      e.epistemic_status = $epistemic_status,
+                      e.confidence = $confidence,
+                      e.assessed_by = $assessed_by,
                       e.created_at = coalesce(e.created_at, datetime()),
                       e.updated_at = datetime()
                   RETURN e.id`,
@@ -121,6 +148,9 @@ IMPORTANT: The properties field accepts an object like {"key": "value"} but valu
 										? JSON.stringify(e.properties)
 										: null,
 									created_by: params.created_by,
+									epistemic_status: e.epistemic_status,
+									confidence: e.confidence,
+									assessed_by: e.assessed_by ?? params.created_by,
 								},
 							});
 							for (const tag of e.tags ?? []) {
