@@ -9,6 +9,10 @@
 		{
 			"binding": "KG_KV",
 			"id": "aa79b9310b7645f88080cef330fdcc55"
+		},
+		{
+			"binding": "OAUTH_KV",
+			"id": "70fdf0cbddf9478e883f251da198073f"
 		}
 	],
 

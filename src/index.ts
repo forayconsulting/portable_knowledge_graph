@@ -1,5 +1,10 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { McpAgent } from "agents/mcp";
+import {
+	OAuthProvider,
+	getOAuthApi,
+} from "@cloudflare/workers-oauth-provider";
+import type { OAuthProviderOptions } from "@cloudflare/workers-oauth-provider";
 import { Neo4jClient } from "./neo4j/client";
 import { registerPrompts } from "./prompts/workflows";
 import { registerResources } from "./resources/schema";
@@ -17,7 +22,7 @@ import { registerTraverseTool } from "./tools/traverse";
 export class KnowledgeGraphMCP extends McpAgent<
 	Env,
 	unknown,
-	Record<string, unknown>
+	{ email: string }
 > {
 	server = new McpServer({
 		name: "knowledge-graph",
@@ -52,22 +57,49 @@ async function handleHealth(env: Env): Promise<Response> {
 	});
 }
 
-export default {
-	fetch(request: Request, env: Env, ctx: ExecutionContext) {
-		const url = new URL(request.url);
-		const secretPath = `/mcp/${env.API_SECRET}`;
+const providerOptions: OAuthProviderOptions<Env> = {
+	apiRoute: "/mcp",
+	apiHandler: KnowledgeGraphMCP.serve("/mcp"),
 
-		if (url.pathname === "/health") {
-			return handleHealth(env);
-		}
+	defaultHandler: {
+		async fetch(request: Request, env: Env, ctx: ExecutionContext) {
+			const url = new URL(request.url);
 
-		if (
-			url.pathname === secretPath ||
-			url.pathname.startsWith(`${secretPath}/`)
-		) {
-			return KnowledgeGraphMCP.serve(secretPath).fetch(request, env, ctx);
-		}
+			if (url.pathname === "/health") {
+				return handleHealth(env);
+			}
 
-		return new Response("Not Found", { status: 404 });
+			if (url.pathname === "/authorize") {
+				const email = request.headers.get(
+					"CF-Access-Authenticated-User-Email",
+				);
+				if (!email) {
+					return new Response(
+						"Unauthorized: Cloudflare Access authentication required",
+						{ status: 401 },
+					);
+				}
+
+				const oauthApi = getOAuthApi(providerOptions, env);
+				const authRequest = await oauthApi.parseAuthRequest(request);
+				const { redirectTo } = await oauthApi.completeAuthorization({
+					request: authRequest,
+					userId: email,
+					metadata: { email },
+					scope: authRequest.scope,
+					props: { email },
+				});
+
+				return Response.redirect(redirectTo, 302);
+			}
+
+			return new Response("Not Found", { status: 404 });
+		},
 	},
+
+	authorizeEndpoint: "/authorize",
+	tokenEndpoint: "/token",
+	clientRegistrationEndpoint: "/register",
 };
+
+export default new OAuthProvider<Env>(providerOptions);

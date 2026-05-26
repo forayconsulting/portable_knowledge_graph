@@ -43,11 +43,12 @@ You need a Railway account and a Cloudflare account.
 
 1. Deploy `neo4j:5-community` on Railway with the APOC plugin
 2. Run `scripts/bootstrap.ts` to create indexes and seed the schema
-3. Deploy the Cloudflare Worker with `wrangler deploy`
-4. Set three secrets: `NEO4J_URL`, `NEO4J_AUTH`, `API_SECRET`
-5. Add the MCP endpoint URL as a connector in Claude
+3. Run `scripts/setup-access.sh` to configure Cloudflare Access (Google OAuth)
+4. Deploy the Cloudflare Worker with `wrangler deploy`
+5. Set secrets: `NEO4J_URL`, `NEO4J_AUTH`, `CF_ACCESS_TEAM_DOMAIN`
+6. Add the MCP endpoint URL as a connector in Claude
 
-The endpoint follows the pattern `https://your-worker.workers.dev/mcp/your-secret`. Anyone with the URL can use the graph. Anyone without it gets a 404.
+Authentication uses Cloudflare Access with Google OAuth. The `/authorize` endpoint is protected by a Cloudflare Access policy that redirects users to Google login. After authentication, the Worker issues OAuth tokens that MCP clients use for subsequent requests. Unauthenticated requests to `/mcp` receive a 401 with OAuth discovery headers.
 
 ## Why this stack
 
