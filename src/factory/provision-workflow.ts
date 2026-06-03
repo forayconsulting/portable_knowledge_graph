@@ -28,8 +28,12 @@ export class ProvisionGraphWorkflow extends WorkflowEntrypoint<
 
 		let projectId: string | null = null;
 
+		const progress = async (stepName: string) => {
+			await getRegistry().updateGraph(graphId, { provision_step: stepName });
+		};
+
 		try {
-			// Step 1: Create Railway project (no retries — not idempotent)
+			await progress("creating-railway-project");
 			const project = await step.do(
 				"create-railway-project",
 				async () => {
@@ -38,7 +42,7 @@ export class ProvisionGraphWorkflow extends WorkflowEntrypoint<
 			);
 			projectId = project.projectId;
 
-			// Step 2: Create Neo4j service (retries are safe — same project)
+			await progress("creating-neo4j-service");
 			const service = await step.do(
 				"create-neo4j-service",
 				{ retries: { limit: 3, delay: "10 seconds", backoff: "exponential" } },
@@ -47,7 +51,7 @@ export class ProvisionGraphWorkflow extends WorkflowEntrypoint<
 				},
 			);
 
-			// Step 3: Generate password and set environment variables
+			await progress("configuring-environment");
 			const password = await step.do("set-env-vars", { retries: { limit: 3, delay: "10 seconds", backoff: "exponential" } }, async () => {
 				const pw = `kg-${crypto.randomUUID()}`;
 				const vars: Record<string, string> = {
@@ -69,7 +73,7 @@ export class ProvisionGraphWorkflow extends WorkflowEntrypoint<
 				return pw;
 			});
 
-			// Step 4: Create public domain
+			await progress("creating-domain");
 			const domain = await step.do("create-domain", { retries: { limit: 3, delay: "10 seconds", backoff: "exponential" } }, async () => {
 				return railway.createServiceDomain(
 					service.serviceId,
@@ -77,12 +81,12 @@ export class ProvisionGraphWorkflow extends WorkflowEntrypoint<
 				);
 			});
 
-			// Step 5: Redeploy to pick up env vars
+			await progress("deploying-service");
 			await step.do("redeploy", { retries: { limit: 3, delay: "10 seconds", backoff: "exponential" } }, async () => {
 				await railway.redeployService(service.serviceId, project.environmentId);
 			});
 
-			// Step 6: Wait for service to be healthy (poll every 15s for up to ~10 min)
+			await progress("waiting-for-neo4j");
 			await step.do(
 				"wait-healthy",
 				{
@@ -102,9 +106,9 @@ export class ProvisionGraphWorkflow extends WorkflowEntrypoint<
 				},
 			);
 
-			// Step 7: Mark bootstrapping
 			await step.do("mark-bootstrapping", async () => {
 				await getRegistry().updateGraphState(graphId, "bootstrapping");
+				await progress("bootstrapping-schema");
 			});
 
 			// Step 8: Run bootstrap schema

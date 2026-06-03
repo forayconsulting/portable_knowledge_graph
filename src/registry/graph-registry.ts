@@ -20,11 +20,24 @@ export class GraphRegistry extends DurableObject {
 				railway_project_id TEXT,
 				railway_service_id TEXT,
 				railway_environment_id TEXT,
+				provision_step TEXT,
+				workflow_id TEXT,
 				error_message TEXT,
 				created_at TEXT NOT NULL,
 				updated_at TEXT NOT NULL
 			)
 		`);
+		// Add columns introduced after v1 (safe to run repeatedly — errors on duplicates are caught)
+		for (const col of ["provision_step TEXT", "workflow_id TEXT"]) {
+			try {
+				this.ctx.storage.sql.exec(
+					`ALTER TABLE graphs ADD COLUMN ${col}`,
+				);
+			} catch {
+				// column already exists
+			}
+		}
+
 		this.initialized = true;
 	}
 
@@ -42,6 +55,8 @@ export class GraphRegistry extends DurableObject {
 			railway_project_id: row.railway_project_id as string | undefined,
 			railway_service_id: row.railway_service_id as string | undefined,
 			railway_environment_id: row.railway_environment_id as string | undefined,
+			provision_step: row.provision_step as string | undefined,
+			workflow_id: row.workflow_id as string | undefined,
 			error_message: row.error_message as string | undefined,
 			created_at: row.created_at as string,
 			updated_at: row.updated_at as string,
@@ -86,8 +101,9 @@ export class GraphRegistry extends DurableObject {
 				graph_id, display_name, neo4j_url, encrypted_neo4j_auth, encryption_iv,
 				owner_email, users, default_role, state,
 				railway_project_id, railway_service_id, railway_environment_id,
+				provision_step, workflow_id,
 				error_message, created_at, updated_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			record.graph_id,
 			record.display_name,
 			record.neo4j_url,
@@ -100,6 +116,8 @@ export class GraphRegistry extends DurableObject {
 			record.railway_project_id ?? null,
 			record.railway_service_id ?? null,
 			record.railway_environment_id ?? null,
+			record.provision_step ?? null,
+			record.workflow_id ?? null,
 			record.error_message ?? null,
 			now,
 			now,

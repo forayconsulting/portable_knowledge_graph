@@ -29,6 +29,8 @@ export interface GraphRecord {
 	railway_project_id?: string;
 	railway_service_id?: string;
 	railway_environment_id?: string;
+	provision_step?: string;
+	workflow_id?: string;
 	error_message?: string;
 	created_at: string;
 	updated_at: string;

@@ -76,6 +76,11 @@ export async function handleCreateGraph(
 		},
 	});
 
+	await registry.updateGraph(body.graph_id, {
+		workflow_id: instance.id,
+		provision_step: "queued",
+	});
+
 	return json(
 		{
 			graph_id: body.graph_id,
@@ -123,6 +128,7 @@ export async function handleGetGraph(
 		graph_id: graph.graph_id,
 		display_name: graph.display_name,
 		state: graph.state,
+		provision_step: graph.provision_step,
 		owner_email: graph.owner_email,
 		users: graph.users,
 		default_role: graph.default_role,

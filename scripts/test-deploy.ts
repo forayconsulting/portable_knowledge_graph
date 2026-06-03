@@ -143,24 +143,31 @@ async function testProvisionAndTeardown() {
 	const pollInterval = 15_000; // 15 seconds
 	const startTime = Date.now();
 	let lastState = "";
+	let lastStep = "";
 
 	while (Date.now() - startTime < maxWaitMs) {
 		await sleep(pollInterval);
 		try {
 			const { body } = await fetchJson(`${FACTORY_URL}/graphs/${TEST_GRAPH}`);
 			const state = body.state as string;
+			const step = (body.provision_step as string) ?? "";
+			const elapsed = `${Math.round((Date.now() - startTime) / 1000)}s`;
+
 			if (state !== lastState) {
-				log(
-					`state: ${lastState || "(initial)"} → ${state} (${Math.round((Date.now() - startTime) / 1000)}s)`,
-				);
+				log(`state: ${lastState || "(initial)"} → ${state} (${elapsed})`);
 				lastState = state;
 			}
+			if (step && step !== lastStep) {
+				log(`  step: ${step} (${elapsed})`);
+				lastStep = step;
+			}
+
 			if (state === "ready") {
 				pass(pollName);
 				break;
 			}
 			if (state === "failed") {
-				fail(pollName, `Provisioning failed: ${body.error_message}`);
+				fail(pollName, `Provisioning failed at step "${step}": ${body.error_message}`);
 				break;
 			}
 		} catch (e) {
