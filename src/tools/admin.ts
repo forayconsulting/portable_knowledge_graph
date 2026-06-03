@@ -1,9 +1,9 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { Neo4jClient } from "../neo4j/client";
+import type { SessionContext } from "../shared/types";
 
-export function registerAdminTool(server: McpServer, env: Env) {
-	const neo4j = new Neo4jClient(env);
+export function registerAdminTool(server: McpServer, ctx: SessionContext) {
+	const { neo4j, role } = ctx;
 
 	server.tool(
 		"admin",
@@ -70,6 +70,17 @@ Use it sparingly — prefer the structured tools for standard operations.`,
 					}
 
 					case "cypher": {
+						if (role !== "admin") {
+							return {
+								content: [
+									{
+										type: "text" as const,
+										text: "Forbidden: raw Cypher requires admin role",
+									},
+								],
+								isError: true,
+							};
+						}
 						if (!params.query)
 							return {
 								content: [

@@ -5,4 +5,6 @@ interface Env {
 	CF_ACCESS_TEAM_DOMAIN: string;
 	MCP_OBJECT: DurableObjectNamespace;
 	KG_KV: KVNamespace;
+	GRAPH_REGISTRY: DurableObjectNamespace;
+	GRAPH_ENCRYPTION_KEY: string;
 }

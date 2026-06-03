@@ -1,9 +1,36 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { Neo4jClient } from "../neo4j/client";
+import type { SessionContext } from "../shared/types";
 
-export function registerRelateTool(server: McpServer, env: Env) {
-	const neo4j = new Neo4jClient(env);
+const ALL_ACTIONS = [
+	"create",
+	"query",
+	"delete",
+	"tag",
+	"untag",
+	"source",
+] as const;
+
+const ACTION_DESCRIPTIONS: Record<string, string> = {
+	create:
+		"- create: Link two entities with a typed relationship. YOU decide the type and weight.",
+	query:
+		"- query: Get all relationships for a node (filtered by type/direction).",
+	delete: "- delete: Remove a specific relationship.",
+	tag: "- tag: Tag an entity with a Tag node (creates TAGGED_WITH edge).",
+	untag: "- untag: Remove a tag from an entity.",
+	source:
+		"- source: Link an entity to a Source node (creates SOURCED_FROM edge with confidence).",
+};
+
+export function registerRelateTool(
+	server: McpServer,
+	ctx: SessionContext,
+	allowedActions?: readonly string[],
+) {
+	const { neo4j, role } = ctx;
+	const actions = allowedActions ?? ALL_ACTIONS;
+	const actionDocs = actions.map((a) => ACTION_DESCRIPTIONS[a]).join("\n");
 
 	server.tool(
 		"relate",
@@ -14,17 +41,12 @@ This keeps the schema flexible — new relationship semantics are added by creat
 nodes, not by changing Cypher.
 
 Actions:
-- create: Link two entities with a typed relationship. YOU decide the type and weight.
-- query: Get all relationships for a node (filtered by type/direction).
-- delete: Remove a specific relationship.
-- tag: Tag an entity with a Tag node (creates TAGGED_WITH edge).
-- untag: Remove a tag from an entity.
-- source: Link an entity to a Source node (creates SOURCED_FROM edge with confidence).
+${actionDocs}
 
 For SIMILAR_TO edges, use the analyze tool's find_similar action instead — it computes
 structural similarity. Or create SIMILAR_TO directly here if YOU have determined the similarity.`,
 		{
-			action: z.enum(["create", "query", "delete", "tag", "untag", "source"]),
+			action: z.enum(actions as unknown as [string, ...string[]]),
 			from_id: z.string().optional().describe("Source entity ID"),
 			to_id: z.string().optional().describe("Target entity ID"),
 			relationship_type: z
@@ -170,6 +192,17 @@ structural similarity. Or create SIMILAR_TO directly here if YOU have determined
 					}
 
 					case "delete": {
+						if (role !== "admin") {
+							return {
+								content: [
+									{
+										type: "text" as const,
+										text: "Forbidden: relationship delete requires admin role",
+									},
+								],
+								isError: true,
+							};
+						}
 						if (!params.from_id || !params.to_id || !params.relationship_type)
 							return {
 								content: [
@@ -241,6 +274,17 @@ structural similarity. Or create SIMILAR_TO directly here if YOU have determined
 					}
 
 					case "untag": {
+						if (role !== "admin") {
+							return {
+								content: [
+									{
+										type: "text" as const,
+										text: "Forbidden: untag requires admin role",
+									},
+								],
+								isError: true,
+							};
+						}
 						if (!params.entity_id || !params.tag_name)
 							return {
 								content: [
@@ -311,6 +355,17 @@ structural similarity. Or create SIMILAR_TO directly here if YOU have determined
 							],
 						};
 					}
+
+					default:
+						return {
+							content: [
+								{
+									type: "text" as const,
+									text: `Unknown action: ${params.action}`,
+								},
+							],
+							isError: true,
+						};
 				}
 			} catch (error) {
 				return {

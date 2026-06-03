@@ -1,12 +1,21 @@
 import type { Neo4jResponse, Neo4jStatement } from "./types";
 
+export interface Neo4jClientOpts {
+	url: string;
+	auth: string;
+}
+
 export class Neo4jClient {
 	private url: string;
 	private authHeader: string;
 
-	constructor(env: Env) {
-		this.url = env.NEO4J_URL;
-		this.authHeader = `Basic ${btoa(env.NEO4J_AUTH)}`;
+	constructor(opts: Neo4jClientOpts) {
+		this.url = opts.url;
+		this.authHeader = `Basic ${btoa(opts.auth)}`;
+	}
+
+	static fromEnv(env: Env): Neo4jClient {
+		return new Neo4jClient({ url: env.NEO4J_URL, auth: env.NEO4J_AUTH });
 	}
 
 	async execute(statements: Neo4jStatement[]): Promise<Neo4jResponse> {

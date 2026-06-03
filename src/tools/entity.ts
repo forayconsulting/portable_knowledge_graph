@@ -1,20 +1,34 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { Neo4jClient } from "../neo4j/client";
+import type { SessionContext } from "../shared/types";
 
-export function registerEntityTool(server: McpServer, env: Env) {
-	const neo4j = new Neo4jClient(env);
+const ALL_ACTIONS = ["create", "get", "update", "delete", "list"] as const;
+
+const ACTION_DESCRIPTIONS: Record<string, string> = {
+	create:
+		"- create: Make a new entity. Requires name and entity_type at minimum. Returns the generated UUID.",
+	get: "- get: Fetch a single entity by ID with all its tags and sources.",
+	update:
+		"- update: Modify fields on an existing entity. Only sends the fields you include.",
+	delete: "- delete: Remove an entity and all its relationships.",
+	list: "- list: Browse entities with optional filters. Paginated.",
+};
+
+export function registerEntityTool(
+	server: McpServer,
+	ctx: SessionContext,
+	allowedActions?: readonly string[],
+) {
+	const { neo4j, role } = ctx;
+	const actions = allowedActions ?? ALL_ACTIONS;
+	const actionDocs = actions.map((a) => ACTION_DESCRIPTIONS[a]).join("\n");
 
 	server.tool(
 		"entity",
 		`CRUD operations for entities. Use this for individual entity operations. For bulk creation, use the ingest tool instead.
 
 ACTIONS:
-- create: Make a new entity. Requires name and entity_type at minimum. Returns the generated UUID.
-- get: Fetch a single entity by ID with all its tags and sources.
-- update: Modify fields on an existing entity. Only sends the fields you include.
-- delete: Remove an entity and all its relationships.
-- list: Browse entities with optional filters. Paginated.
+${actionDocs}
 
 ENTITY STRUCTURE:
 - name: Human-readable label. This is full-text indexed so make it descriptive and searchable.
@@ -29,7 +43,7 @@ ENTITY STRUCTURE:
 
 IMPORTANT: You do not need to create entity types before creating entities if the type already exists. Call ontology(describe) once at the start to see available types. Only create new types if no existing type fits.`,
 		{
-			action: z.enum(["create", "get", "update", "delete", "list"]),
+			action: z.enum(actions as unknown as [string, ...string[]]),
 			id: z
 				.string()
 				.optional()
@@ -54,7 +68,9 @@ IMPORTANT: You do not need to create entity types before creating entities if th
 				.enum(["grounded", "provisional", "speculative", "contested"])
 				.optional()
 				.default("provisional")
-				.describe("Epistemic status: grounded, provisional, speculative, or contested"),
+				.describe(
+					"Epistemic status: grounded, provisional, speculative, or contested",
+				),
 			confidence: z
 				.number()
 				.min(0)
@@ -230,6 +246,17 @@ IMPORTANT: You do not need to create entity types before creating entities if th
 					}
 
 					case "delete": {
+						if (role !== "admin") {
+							return {
+								content: [
+									{
+										type: "text" as const,
+										text: "Forbidden: delete requires admin role",
+									},
+								],
+								isError: true,
+							};
+						}
 						if (!params.id)
 							return {
 								content: [
@@ -291,6 +318,17 @@ IMPORTANT: You do not need to create entity types before creating entities if th
 							],
 						};
 					}
+
+					default:
+						return {
+							content: [
+								{
+									type: "text" as const,
+									text: `Unknown action: ${params.action}`,
+								},
+							],
+							isError: true,
+						};
 				}
 			} catch (error) {
 				return {

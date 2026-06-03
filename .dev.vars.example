@@ -1,6 +1,13 @@
-# Neo4j connection (Railway)
+# Neo4j connection (Railway) — used in single-tenant fallback mode
 NEO4J_URL=https://your-neo4j-host.up.railway.app/db/neo4j/tx/commit
 NEO4J_AUTH=neo4j:your-password-here
 
-# MCP server access control
-API_SECRET=generate-with-openssl-rand-hex-32
+# Cloudflare Access team domain
+CF_ACCESS_TEAM_DOMAIN=your-team.cloudflareaccess.com
+
+# Multi-tenant graph encryption key (shared by both workers)
+GRAPH_ENCRYPTION_KEY=generate-with-openssl-rand-hex-32
+
+# Factory Worker secrets (set on kg-factory only)
+# RAILWAY_API_TOKEN=your-railway-api-token
+# FACTORY_ADMINS=admin@example.com,admin2@example.com

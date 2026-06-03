@@ -1,0 +1,40 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "kg-factory",
+	"main": "src/factory/index.ts",
+	"compatibility_date": "2025-04-01",
+	"compatibility_flags": ["nodejs_compat"],
+
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "GRAPH_REGISTRY",
+				"class_name": "GraphRegistry"
+			}
+		]
+	},
+
+	"migrations": [
+		{
+			"tag": "v1",
+			"new_sqlite_classes": ["GraphRegistry"]
+		}
+	],
+
+	"workflows": [
+		{
+			"name": "provision-graph-workflow",
+			"binding": "PROVISION_WORKFLOW",
+			"class_name": "ProvisionGraphWorkflow"
+		},
+		{
+			"name": "fleet-bootstrap-workflow",
+			"binding": "FLEET_BOOTSTRAP_WORKFLOW",
+			"class_name": "FleetBootstrapWorkflow"
+		}
+	],
+
+	"observability": {
+		"enabled": true
+	}
+}

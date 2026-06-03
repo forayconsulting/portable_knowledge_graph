@@ -1,9 +1,26 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { Neo4jClient } from "../neo4j/client";
+import type { SessionContext } from "../shared/types";
 
-export function registerNamespaceTool(server: McpServer, env: Env) {
-	const neo4j = new Neo4jClient(env);
+const ALL_ACTIONS = ["list", "create", "stats", "delete"] as const;
+
+const ACTION_DESCRIPTIONS: Record<string, string> = {
+	list: "- list: List all namespaces with entity counts",
+	create:
+		"- create: Create a new namespace (also creates __Schema:Namespace node)",
+	stats: "- stats: Detailed stats for a specific namespace",
+	delete:
+		"- delete: Delete a namespace and optionally all its entities (requires confirm=true)",
+};
+
+export function registerNamespaceTool(
+	server: McpServer,
+	ctx: SessionContext,
+	allowedActions?: readonly string[],
+) {
+	const { neo4j, role } = ctx;
+	const actions = allowedActions ?? ALL_ACTIONS;
+	const actionDocs = actions.map((a) => ACTION_DESCRIPTIONS[a]).join("\n");
 
 	server.tool(
 		"namespace",
@@ -15,12 +32,9 @@ Namespaces partition the graph into logical domains. A single Neo4j instance can
 All query tools accept a namespace filter. Entities without a namespace are global.
 
 Actions:
-- list: List all namespaces with entity counts
-- create: Create a new namespace (also creates __Schema:Namespace node)
-- stats: Detailed stats for a specific namespace
-- delete: Delete a namespace and optionally all its entities (requires confirm=true)`,
+${actionDocs}`,
 		{
-			action: z.enum(["list", "create", "stats", "delete"]),
+			action: z.enum(actions as unknown as [string, ...string[]]),
 			name: z.string().optional().describe("Namespace name"),
 			description: z.string().optional(),
 			confirm: z
@@ -151,6 +165,17 @@ Actions:
 					}
 
 					case "delete": {
+						if (role !== "admin") {
+							return {
+								content: [
+									{
+										type: "text" as const,
+										text: "Forbidden: namespace delete requires admin role",
+									},
+								],
+								isError: true,
+							};
+						}
 						if (!params.name)
 							return {
 								content: [
@@ -200,6 +225,17 @@ Actions:
 							],
 						};
 					}
+
+					default:
+						return {
+							content: [
+								{
+									type: "text" as const,
+									text: `Unknown action: ${params.action}`,
+								},
+							],
+							isError: true,
+						};
 				}
 			} catch (error) {
 				return {

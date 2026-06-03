@@ -1,5 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { Neo4jClient } from "../neo4j/client";
+import type { SessionContext } from "../shared/types";
 
 const GUIDE_CONTENT = `# Knowledge Graph Guide
 
@@ -70,8 +70,8 @@ Status definitions:
 - Use summary for short descriptions (indexed for search), content for full text
 `;
 
-export function registerResources(server: McpServer, env: Env) {
-	const neo4j = new Neo4jClient(env);
+export function registerResources(server: McpServer, ctx: SessionContext) {
+	const { neo4j } = ctx;
 
 	server.resource("kg-guide", "kg://schema/guide", async (uri) => ({
 		contents: [

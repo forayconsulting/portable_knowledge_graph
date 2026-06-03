@@ -1,9 +1,9 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { Neo4jClient } from "../neo4j/client";
+import type { SessionContext } from "../shared/types";
 
-export function registerSearchTool(server: McpServer, env: Env) {
-	const neo4j = new Neo4jClient(env);
+export function registerSearchTool(server: McpServer, ctx: SessionContext) {
+	const { neo4j } = ctx;
 
 	server.tool(
 		"search",

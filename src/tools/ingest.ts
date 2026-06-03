@@ -1,12 +1,12 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { Neo4jClient } from "../neo4j/client";
 import type { Neo4jStatement } from "../neo4j/types";
+import type { SessionContext } from "../shared/types";
 
 const BATCH_SIZE = 100;
 
-export function registerIngestTool(server: McpServer, env: Env) {
-	const neo4j = new Neo4jClient(env);
+export function registerIngestTool(server: McpServer, ctx: SessionContext) {
+	const { neo4j } = ctx;
 
 	server.tool(
 		"ingest",
@@ -71,7 +71,9 @@ IMPORTANT: The properties field accepts an object like {"key": "value"} but valu
 						assessed_by: z
 							.string()
 							.optional()
-							.describe("Who assessed epistemic status (defaults to created_by)"),
+							.describe(
+								"Who assessed epistemic status (defaults to created_by)",
+							),
 						tags: z
 							.array(z.string())
 							.optional()

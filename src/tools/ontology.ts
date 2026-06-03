@@ -1,42 +1,48 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { Neo4jClient } from "../neo4j/client";
 import type { Neo4jStatement } from "../neo4j/types";
+import type { SessionContext } from "../shared/types";
 
-export function registerOntologyTool(server: McpServer, env: Env) {
-	const neo4j = new Neo4jClient(env);
+const ALL_ACTIONS = [
+	"describe",
+	"batch_create",
+	"create_type",
+	"create_rel_type",
+	"create_tag_group",
+	"create_namespace",
+] as const;
+
+const ACTION_DESCRIPTIONS: Record<string, string> = {
+	describe:
+		"- describe: Returns all entity types, relationship types, tag groups, and namespaces with instance counts.",
+	batch_create:
+		"- batch_create: Create multiple entity types, relationship types, tag groups, and/or a namespace in ONE call.",
+	create_type: "- create_type: Create a single entity type.",
+	create_rel_type: "- create_rel_type: Create a single relationship type.",
+	create_tag_group: "- create_tag_group: Create a single tag group.",
+	create_namespace: "- create_namespace: Create a single namespace.",
+};
+
+export function registerOntologyTool(
+	server: McpServer,
+	ctx: SessionContext,
+	allowedActions?: readonly string[],
+) {
+	const { neo4j } = ctx;
+	const actions = allowedActions ?? ALL_ACTIONS;
+	const actionDocs = actions.map((a) => ACTION_DESCRIPTIONS[a]).join("\n");
 
 	server.tool(
 		"ontology",
 		`View and manage the graph's schema. Call describe ONCE at the start of any ingestion to see what types exist.
 
 ACTIONS:
-- describe: Returns all entity types, relationship types, tag groups, and namespaces with instance counts. Call this FIRST before creating anything.
-- batch_create: Create multiple entity types, relationship types, tag groups, and/or a namespace in ONE call. Use this instead of calling create_type repeatedly.
-- create_type: Create a single entity type. Prefer batch_create when adding more than one.
-- create_rel_type: Create a single relationship type. Prefer batch_create when adding more than one.
-- create_tag_group: Create a single tag group.
-- create_namespace: Create a single namespace.
-
-TYPICAL INGESTION WORKFLOW:
-1. Call ontology(describe) once. Review the existing types.
-2. Decide which new types you need (if any). Many documents fit the built-in types: Concept, Document, Fact, Note.
-3. If you need new types, call ontology(batch_create) with ALL new types in one call.
-4. Proceed to ingest(entities) and ingest(relationships).
-
-DO NOT call create_type or create_rel_type in a loop. Use batch_create to create everything at once.
+${actionDocs}
 
 BUILT-IN ENTITY TYPES: Concept, Document, Fact, Note
 BUILT-IN RELATIONSHIP TYPES: CONTAINS, REFERENCES, SUPPORTS, CONTRADICTS, DEPENDS_ON, CAUSED_BY, PRECEDES`,
 		{
-			action: z.enum([
-				"describe",
-				"batch_create",
-				"create_type",
-				"create_rel_type",
-				"create_tag_group",
-				"create_namespace",
-			]),
+			action: z.enum(actions as unknown as [string, ...string[]]),
 			name: z
 				.string()
 				.optional()
@@ -427,6 +433,17 @@ BUILT-IN RELATIONSHIP TYPES: CONTAINS, REFERENCES, SUPPORTS, CONTRADICTS, DEPEND
 							],
 						};
 					}
+
+					default:
+						return {
+							content: [
+								{
+									type: "text" as const,
+									text: `Unknown action: ${params.action}`,
+								},
+							],
+							isError: true,
+						};
 				}
 			} catch (error) {
 				return {

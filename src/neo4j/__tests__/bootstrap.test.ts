@@ -12,8 +12,8 @@ describe("bootstrap", () => {
 		expect(BOOTSTRAP_CONSTRAINTS).toHaveLength(3);
 	});
 
-	it("has 5 indexes", () => {
-		expect(BOOTSTRAP_INDEXES).toHaveLength(5);
+	it("has 6 indexes", () => {
+		expect(BOOTSTRAP_INDEXES).toHaveLength(6);
 	});
 
 	it("has 2 full-text indexes", () => {

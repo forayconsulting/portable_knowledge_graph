@@ -1,9 +1,26 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { Neo4jClient } from "../neo4j/client";
+import type { SessionContext } from "../shared/types";
 
-export function registerSourceTool(server: McpServer, env: Env) {
-	const neo4j = new Neo4jClient(env);
+const ALL_ACTIONS = ["create", "get", "list", "link", "trace"] as const;
+
+const ACTION_DESCRIPTIONS: Record<string, string> = {
+	create: "- create: Create a new Source record",
+	get: "- get: Get a source by ID with all linked entities",
+	list: "- list: List sources with optional type filter",
+	link: "- link: Link an entity to a source (shortcut for relate(source))",
+	trace:
+		"- trace: Trace the full provenance chain for an entity (what sources contributed to it)",
+};
+
+export function registerSourceTool(
+	server: McpServer,
+	ctx: SessionContext,
+	allowedActions?: readonly string[],
+) {
+	const { neo4j } = ctx;
+	const actions = allowedActions ?? ALL_ACTIONS;
+	const actionDocs = actions.map((a) => ACTION_DESCRIPTIONS[a]).join("\n");
 
 	server.tool(
 		"source",
@@ -13,13 +30,9 @@ Sources record WHERE knowledge came from: documents, URLs, user input, API respo
 Link entities to sources via SOURCED_FROM edges with confidence scores and text excerpts.
 
 Actions:
-- create: Create a new Source record
-- get: Get a source by ID with all linked entities
-- list: List sources with optional type filter
-- link: Link an entity to a source (shortcut for relate(source))
-- trace: Trace the full provenance chain for an entity (what sources contributed to it)`,
+${actionDocs}`,
 		{
-			action: z.enum(["create", "get", "list", "link", "trace"]),
+			action: z.enum(actions as unknown as [string, ...string[]]),
 			id: z.string().optional().describe("Source ID (auto-UUID on create)"),
 			name: z.string().optional().describe("Source name/title"),
 			source_type: z
@@ -233,6 +246,17 @@ Actions:
 							],
 						};
 					}
+
+					default:
+						return {
+							content: [
+								{
+									type: "text" as const,
+									text: `Unknown action: ${params.action}`,
+								},
+							],
+							isError: true,
+						};
 				}
 			} catch (error) {
 				return {

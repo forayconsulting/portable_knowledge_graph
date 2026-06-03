@@ -1,9 +1,9 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { Neo4jClient } from "../neo4j/client";
+import type { SessionContext } from "../shared/types";
 
-export function registerAnalyzeTool(server: McpServer, env: Env) {
-	const neo4j = new Neo4jClient(env);
+export function registerAnalyzeTool(server: McpServer, ctx: SessionContext) {
+	const { neo4j } = ctx;
 
 	server.tool(
 		"analyze",
@@ -19,7 +19,13 @@ Actions:
 These are structural queries. For SEMANTIC similarity (meaning-based), YOU must determine
 similarity yourself and write SIMILAR_TO edges via the relate tool.`,
 		{
-			action: z.enum(["stats", "shortest_path", "neighbors", "find_similar", "epistemic_gaps"]),
+			action: z.enum([
+				"stats",
+				"shortest_path",
+				"neighbors",
+				"find_similar",
+				"epistemic_gaps",
+			]),
 			from_id: z.string().optional().describe("Start entity for shortest_path"),
 			to_id: z.string().optional().describe("End entity for shortest_path"),
 			max_depth: z.number().optional().default(10).describe("Max path length"),
@@ -266,16 +272,27 @@ similarity yourself and write SIMILAR_TO edges via the relate tool.`,
 								{
 									type: "text" as const,
 									text: JSON.stringify(
-										gapRows.map(([id, name, type, ns, status, conf, assessor, created]) => ({
-											id,
-											name,
-											entity_type: type,
-											namespace: ns,
-											epistemic_status: status,
-											confidence: conf,
-											assessed_by: assessor,
-											created_at: created,
-										})),
+										gapRows.map(
+											([
+												id,
+												name,
+												type,
+												ns,
+												status,
+												conf,
+												assessor,
+												created,
+											]) => ({
+												id,
+												name,
+												entity_type: type,
+												namespace: ns,
+												epistemic_status: status,
+												confidence: conf,
+												assessed_by: assessor,
+												created_at: created,
+											}),
+										),
 										null,
 										2,
 									),

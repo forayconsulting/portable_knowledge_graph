@@ -21,6 +21,11 @@
 			{
 				"name": "MCP_OBJECT",
 				"class_name": "KnowledgeGraphMCP"
+			},
+			{
+				"name": "GRAPH_REGISTRY",
+				"class_name": "GraphRegistry",
+				"script_name": "kg-factory"
 			}
 		]
 	},

@@ -31,7 +31,13 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npx wrangler deploy
+      - name: Deploy Factory Worker (owns registry DO — must deploy first)
+        run: npx wrangler deploy -c wrangler.factory.jsonc
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      - name: Deploy MCP Worker
+        run: npx wrangler deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
