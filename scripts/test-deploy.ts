@@ -139,7 +139,7 @@ async function testProvisionAndTeardown() {
 
 	// --- Poll until ready ---
 	const pollName = "Provisioning reaches 'ready' state";
-	const maxWaitMs = 8 * 60 * 1000; // 8 minutes
+	const maxWaitMs = 12 * 60 * 1000; // 12 minutes (Neo4j boot takes 5-10 min)
 	const pollInterval = 15_000; // 15 seconds
 	const startTime = Date.now();
 	let lastState = "";

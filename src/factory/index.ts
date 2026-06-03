@@ -21,6 +21,7 @@ export default {
 			return Response.json({ status: "ok", service: "kg-factory" });
 		}
 
+
 		const email = getAuthenticatedEmail(request);
 		if (!email) {
 			return Response.json(

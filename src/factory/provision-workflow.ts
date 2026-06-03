@@ -29,47 +29,48 @@ export class ProvisionGraphWorkflow extends WorkflowEntrypoint<
 		let projectId: string | null = null;
 
 		try {
-			// Step 1: Create Railway project
+			// Step 1: Create Railway project (no retries — not idempotent)
 			const project = await step.do(
 				"create-railway-project",
-				{ retries: { limit: 3, delay: "5 seconds", backoff: "exponential" } },
 				async () => {
 					return railway.createProject(`kg-${graphId}`);
 				},
 			);
 			projectId = project.projectId;
 
-			// Step 2: Create Neo4j service
+			// Step 2: Create Neo4j service (retries are safe — same project)
 			const service = await step.do(
 				"create-neo4j-service",
-				{ retries: { limit: 3, delay: "5 seconds", backoff: "exponential" } },
+				{ retries: { limit: 3, delay: "10 seconds", backoff: "exponential" } },
 				async () => {
 					return railway.createService(project.projectId, "neo4j:5-community");
 				},
 			);
 
 			// Step 3: Generate password and set environment variables
-			const password = await step.do("set-env-vars", async () => {
+			const password = await step.do("set-env-vars", { retries: { limit: 3, delay: "10 seconds", backoff: "exponential" } }, async () => {
 				const pw = `kg-${crypto.randomUUID()}`;
-				await railway.setVariable(
-					project.projectId,
-					project.environmentId,
-					service.serviceId,
-					"NEO4J_AUTH",
-					`neo4j/${pw}`,
-				);
-				await railway.setVariable(
-					project.projectId,
-					project.environmentId,
-					service.serviceId,
-					"NEO4J_PLUGINS",
-					'["apoc"]',
-				);
+				const vars: Record<string, string> = {
+					NEO4J_AUTH: `neo4j/${pw}`,
+					NEO4J_PLUGINS: '["apoc"]',
+					PORT: "7474",
+					NEO4J_dbms_connector_http_listen__address: ":7474",
+					"NEO4J_dbms_security_procedures_unrestricted": "apoc.*",
+				};
+				for (const [name, value] of Object.entries(vars)) {
+					await railway.setVariable(
+						project.projectId,
+						project.environmentId,
+						service.serviceId,
+						name,
+						value,
+					);
+				}
 				return pw;
 			});
 
 			// Step 4: Create public domain
-			const domain = await step.do("create-domain", async () => {
+			const domain = await step.do("create-domain", { retries: { limit: 3, delay: "10 seconds", backoff: "exponential" } }, async () => {
 				return railway.createServiceDomain(
 					service.serviceId,
 					project.environmentId,
@@ -77,16 +78,16 @@ export class ProvisionGraphWorkflow extends WorkflowEntrypoint<
 			});
 
 			// Step 5: Redeploy to pick up env vars
-			await step.do("redeploy", async () => {
+			await step.do("redeploy", { retries: { limit: 3, delay: "10 seconds", backoff: "exponential" } }, async () => {
 				await railway.redeployService(service.serviceId, project.environmentId);
 			});
 
-			// Step 6: Wait for service to be healthy
+			// Step 6: Wait for service to be healthy (poll every 15s for up to ~10 min)
 			await step.do(
 				"wait-healthy",
 				{
-					retries: { limit: 30, delay: "10 seconds", backoff: "linear" },
-					timeout: "5 minutes",
+					retries: { limit: 40, delay: "15 seconds", backoff: "constant" },
+					timeout: "10 minutes",
 				},
 				async () => {
 					const neo4j = new Neo4jClient({
