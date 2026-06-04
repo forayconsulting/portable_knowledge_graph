@@ -34,12 +34,9 @@ export class ProvisionGraphWorkflow extends WorkflowEntrypoint<
 
 		try {
 			await progress("creating-railway-project");
-			const project = await step.do(
-				"create-railway-project",
-				async () => {
-					return railway.createProject(`kg-${graphId}`);
-				},
-			);
+			const project = await step.do("create-railway-project", async () => {
+				return railway.createProject(`kg-${graphId}`);
+			});
 			projectId = project.projectId;
 
 			await progress("creating-neo4j-service");
@@ -52,39 +49,54 @@ export class ProvisionGraphWorkflow extends WorkflowEntrypoint<
 			);
 
 			await progress("configuring-environment");
-			const password = await step.do("set-env-vars", { retries: { limit: 3, delay: "10 seconds", backoff: "exponential" } }, async () => {
-				const pw = `kg-${crypto.randomUUID()}`;
-				const vars: Record<string, string> = {
-					NEO4J_AUTH: `neo4j/${pw}`,
-					NEO4J_PLUGINS: '["apoc"]',
-					PORT: "7474",
-					NEO4J_dbms_connector_http_listen__address: ":7474",
-					"NEO4J_dbms_security_procedures_unrestricted": "apoc.*",
-				};
-				for (const [name, value] of Object.entries(vars)) {
-					await railway.setVariable(
-						project.projectId,
-						project.environmentId,
-						service.serviceId,
-						name,
-						value,
-					);
-				}
-				return pw;
-			});
+			const password = await step.do(
+				"set-env-vars",
+				{ retries: { limit: 3, delay: "10 seconds", backoff: "exponential" } },
+				async () => {
+					const pw = `kg-${crypto.randomUUID()}`;
+					const vars: Record<string, string> = {
+						NEO4J_AUTH: `neo4j/${pw}`,
+						NEO4J_PLUGINS: '["apoc"]',
+						PORT: "7474",
+						NEO4J_dbms_connector_http_listen__address: ":7474",
+						NEO4J_dbms_security_procedures_unrestricted: "apoc.*",
+					};
+					for (const [name, value] of Object.entries(vars)) {
+						await railway.setVariable(
+							project.projectId,
+							project.environmentId,
+							service.serviceId,
+							name,
+							value,
+						);
+					}
+					return pw;
+				},
+			);
 
 			await progress("creating-domain");
-			const domain = await step.do("create-domain", { retries: { limit: 3, delay: "10 seconds", backoff: "exponential" } }, async () => {
-				return railway.createServiceDomain(
-					service.serviceId,
-					project.environmentId,
-				);
-			});
+			const domain = await step.do(
+				"create-domain",
+				{ retries: { limit: 3, delay: "10 seconds", backoff: "exponential" } },
+				async () => {
+					return railway.createServiceDomain(
+						service.serviceId,
+						project.environmentId,
+					);
+				},
+			);
 
 			await progress("deploying-service");
-			await step.do("redeploy", { retries: { limit: 3, delay: "10 seconds", backoff: "exponential" } }, async () => {
-				await railway.redeployService(service.serviceId, project.environmentId);
-			});
+			await step.do(
+				"redeploy",
+				{ retries: { limit: 3, delay: "10 seconds", backoff: "exponential" } },
+				async () => {
+					await railway.redeployService(
+						service.serviceId,
+						project.environmentId,
+					);
+				},
+			);
 
 			await progress("waiting-for-neo4j");
 			await step.do(

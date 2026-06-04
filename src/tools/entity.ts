@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { buildPropertyFilter, promoteProperties } from "../neo4j/properties";
 import type { SessionContext } from "../shared/types";
 
 const ALL_ACTIONS = ["create", "get", "update", "delete", "list"] as const;
@@ -36,7 +37,7 @@ ENTITY STRUCTURE:
 - namespace: Groups entities into a workspace. Use lowercase-hyphenated names like "engineering-docs" or "customer-research".
 - summary: One to two sentence description. Full-text indexed. Keep it concise but informative.
 - content: Long-form text body. Full-text indexed. Use for document text, detailed notes, etc.
-- properties: Optional JSON object for structured metadata. Stored as a JSON string internally. Use flat key-value pairs with string/number values. Example: {"author": "Jane Smith", "year": 2024, "pages": 312}
+- properties: Optional JSON object for structured metadata. Flat key-value pairs with string/number/boolean values are promoted to queryable node properties (prefixed with prop_). Example: {"author": "Jane Smith", "year": 2024, "pages": 312}
 - epistemic_status: One of "grounded", "provisional", "speculative", "contested". Defaults to "provisional".
 - confidence: Float from 0.0 to 1.0. Defaults to 0.5.
 - assessed_by: Who assessed the epistemic status. Defaults to the value of created_by.
@@ -82,6 +83,12 @@ IMPORTANT: You do not need to create entity types before creating entities if th
 				.string()
 				.optional()
 				.describe("Who assessed the epistemic status (defaults to created_by)"),
+			embedding: z
+				.array(z.number())
+				.optional()
+				.describe(
+					"Embedding vector (e.g. 1536-dim float array from text-embedding-3-small). Client-supplied; server stores and queries it via vector_search.",
+				),
 			created_by: z
 				.string()
 				.optional()
@@ -95,6 +102,12 @@ IMPORTANT: You do not need to create entity types before creating entities if th
 				.string()
 				.optional()
 				.describe("Filter by namespace (for list)"),
+			property_filter: z
+				.record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
+				.optional()
+				.describe(
+					'Filter by promoted properties (for list). Keys are property names without the prop_ prefix. Example: {"author": "Jane Smith"}',
+				),
 			limit: z.number().optional().default(50),
 			offset: z.number().optional().default(0),
 		},
@@ -103,15 +116,22 @@ IMPORTANT: You do not need to create entity types before creating entities if th
 				switch (params.action) {
 					case "create": {
 						const id = params.id ?? crypto.randomUUID();
+						const promoted = promoteProperties(params.properties);
+						const propSetClause = [
+							"e.prop_keys = $prop_keys",
+							...promoted.setClauses,
+						].join(", ");
 						await neo4j.query(
 							`CREATE (e:Entity {
                 id: $id, name: $name, entity_type: $entity_type,
                 namespace: $namespace, summary: $summary, content: $content,
-                properties: $properties, created_by: $created_by,
+                properties: $properties, embedding: $embedding,
+                created_by: $created_by,
                 epistemic_status: $epistemic_status, confidence: $confidence,
                 assessed_by: $assessed_by,
                 created_at: datetime(), updated_at: datetime()
               })
+              SET ${propSetClause}
               RETURN e.id`,
 							{
 								id,
@@ -123,10 +143,13 @@ IMPORTANT: You do not need to create entity types before creating entities if th
 								properties: params.properties
 									? JSON.stringify(params.properties)
 									: null,
+								embedding: params.embedding ?? null,
 								created_by: params.created_by,
 								epistemic_status: params.epistemic_status,
 								confidence: params.confidence,
 								assessed_by: params.assessed_by ?? params.created_by,
+								prop_keys: promoted.propKeys,
+								...promoted.params,
 							},
 						);
 						return {
@@ -218,6 +241,13 @@ IMPORTANT: You do not need to create entity types before creating entities if th
 						if (params.properties !== undefined) {
 							sets.push("e.properties = $properties");
 							p.properties = JSON.stringify(params.properties);
+							const promoted = promoteProperties(params.properties);
+							sets.push("e.prop_keys = $prop_keys");
+							p.prop_keys = promoted.propKeys;
+							for (const clause of promoted.setClauses) {
+								sets.push(clause);
+							}
+							Object.assign(p, promoted.params);
 						}
 						if (params.epistemic_status !== undefined) {
 							sets.push("e.epistemic_status = $epistemic_status");
@@ -230,6 +260,10 @@ IMPORTANT: You do not need to create entity types before creating entities if th
 						if (params.assessed_by !== undefined) {
 							sets.push("e.assessed_by = $assessed_by");
 							p.assessed_by = params.assessed_by;
+						}
+						if (params.embedding !== undefined) {
+							sets.push("e.embedding = $embedding");
+							p.embedding = params.embedding;
 						}
 						await neo4j.query(
 							`MATCH (e:Entity {id: $id}) SET ${sets.join(", ")} RETURN e.id`,
@@ -282,21 +316,26 @@ IMPORTANT: You do not need to create entity types before creating entities if th
 					}
 
 					case "list": {
+						const pf = buildPropertyFilter(params.property_filter, "e");
+						const propWhere = pf.whereClauses.length
+							? ` AND ${pf.whereClauses.join(" AND ")}`
+							: "";
 						const rows = await neo4j.query(
 							`MATCH (e:Entity)
                WHERE ($filter_type IS NULL OR e.entity_type = $filter_type)
-                 AND ($filter_namespace IS NULL OR e.namespace = $filter_namespace)
+                 AND ($filter_namespace IS NULL OR e.namespace = $filter_namespace)${propWhere}
+               WITH e ORDER BY e.created_at DESC
+               SKIP $offset LIMIT $limit
                OPTIONAL MATCH (e)-[:TAGGED_WITH]->(t:Tag)
                RETURN e.id, e.name, e.entity_type, e.namespace,
                       left(coalesce(e.summary, ''), 100),
-                      collect(DISTINCT t.name) AS tags
-               ORDER BY e.created_at DESC
-               SKIP $offset LIMIT $limit`,
+                      collect(DISTINCT t.name) AS tags`,
 							{
 								filter_type: params.filter_type ?? null,
 								filter_namespace: params.filter_namespace ?? null,
 								offset: params.offset,
 								limit: params.limit,
+								...pf.params,
 							},
 						);
 						const entities = rows.map(

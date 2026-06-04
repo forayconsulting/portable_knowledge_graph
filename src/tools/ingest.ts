@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { promoteProperties } from "../neo4j/properties";
 import type { Neo4jStatement } from "../neo4j/types";
 import type { SessionContext } from "../shared/types";
 
@@ -74,6 +75,10 @@ IMPORTANT: The properties field accepts an object like {"key": "value"} but valu
 							.describe(
 								"Who assessed epistemic status (defaults to created_by)",
 							),
+						embedding: z
+							.array(z.number())
+							.optional()
+							.describe("Embedding vector"),
 						tags: z
 							.array(z.string())
 							.optional()
@@ -90,7 +95,6 @@ IMPORTANT: The properties field accepts an object like {"key": "value"} but valu
 						to_id: z.string().optional(),
 						to_name: z.string().optional(),
 						relationship_type: z.string(),
-						weight: z.number().optional(),
 						properties: z.record(z.string(), z.unknown()).optional(),
 					}),
 				)
@@ -127,17 +131,21 @@ IMPORTANT: The properties field accepts an object like {"key": "value"} but valu
 						for (const e of params.entities) {
 							const id = e.id ?? crypto.randomUUID();
 							ids.push(id);
+							const promoted = promoteProperties(e.properties);
+							const propSetClause = promoted.setClauses.length
+								? `, e.prop_keys = $prop_keys, ${promoted.setClauses.join(", ")}`
+								: ", e.prop_keys = $prop_keys";
 							allStatements.push({
 								statement: `MERGE (e:Entity {id: $id})
                   SET e.name = $name, e.entity_type = $entity_type,
                       e.namespace = $namespace, e.summary = $summary,
                       e.content = $content, e.properties = $properties,
-                      e.created_by = $created_by,
+                      e.embedding = $embedding, e.created_by = $created_by,
                       e.epistemic_status = $epistemic_status,
                       e.confidence = $confidence,
                       e.assessed_by = $assessed_by,
                       e.created_at = coalesce(e.created_at, datetime()),
-                      e.updated_at = datetime()
+                      e.updated_at = datetime()${propSetClause}
                   RETURN e.id`,
 								parameters: {
 									id,
@@ -149,10 +157,13 @@ IMPORTANT: The properties field accepts an object like {"key": "value"} but valu
 									properties: e.properties
 										? JSON.stringify(e.properties)
 										: null,
+									embedding: e.embedding ?? null,
 									created_by: params.created_by,
 									epistemic_status: e.epistemic_status,
 									confidence: e.confidence,
 									assessed_by: e.assessed_by ?? params.created_by,
+									prop_keys: promoted.propKeys,
+									...promoted.params,
 								},
 							});
 							for (const tag of e.tags ?? []) {
@@ -207,7 +218,7 @@ IMPORTANT: The properties field accepts an object like {"key": "value"} but valu
 							return {
 								statement: `${fromMatch} ${toMatch}
                   CREATE (a)-[:RELATES_TO {
-                    type: $rel_type, weight: $weight,
+                    type: $rel_type,
                     properties: $properties, created_by: $created_by,
                     created_at: datetime()
                   }]->(b)
@@ -218,7 +229,6 @@ IMPORTANT: The properties field accepts an object like {"key": "value"} but valu
 									to_id: r.to_id ?? null,
 									to_name: r.to_name ?? null,
 									rel_type: r.relationship_type,
-									weight: r.weight ?? 1.0,
 									properties: r.properties
 										? JSON.stringify(r.properties)
 										: null,

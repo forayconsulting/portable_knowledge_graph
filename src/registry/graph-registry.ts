@@ -30,9 +30,7 @@ export class GraphRegistry extends DurableObject {
 		// Add columns introduced after v1 (safe to run repeatedly — errors on duplicates are caught)
 		for (const col of ["provision_step TEXT", "workflow_id TEXT"]) {
 			try {
-				this.ctx.storage.sql.exec(
-					`ALTER TABLE graphs ADD COLUMN ${col}`,
-				);
+				this.ctx.storage.sql.exec(`ALTER TABLE graphs ADD COLUMN ${col}`);
 			} catch {
 				// column already exists
 			}

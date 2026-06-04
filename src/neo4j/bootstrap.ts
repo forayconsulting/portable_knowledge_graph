@@ -40,6 +40,14 @@ export const BOOTSTRAP_INDEXES: Neo4jStatement[] = [
 		statement:
 			"CREATE INDEX source_type IF NOT EXISTS FOR (s:Source) ON (s.source_type)",
 	},
+	{
+		statement:
+			"CREATE INDEX rel_type IF NOT EXISTS FOR ()-[r:RELATES_TO]-() ON (r.type)",
+	},
+	{
+		statement:
+			"CREATE INDEX entity_ns_type IF NOT EXISTS FOR (e:Entity) ON (e.namespace, e.entity_type)",
+	},
 ];
 
 export const BOOTSTRAP_FULLTEXT: Neo4jStatement[] = [
@@ -129,11 +137,23 @@ export const BOOTSTRAP_SCHEMA_SEED: Neo4jStatement[] = [
 	},
 ];
 
+export const BOOTSTRAP_VECTOR: Neo4jStatement[] = [
+	{
+		statement: `CREATE VECTOR INDEX entity_embedding IF NOT EXISTS
+      FOR (e:Entity) ON (e.embedding)
+      OPTIONS {indexConfig: {
+        \`vector.dimensions\`: 1536,
+        \`vector.similarity_function\`: 'cosine'
+      }}`,
+	},
+];
+
 export function allBootstrapStatements(): Neo4jStatement[] {
 	return [
 		...BOOTSTRAP_CONSTRAINTS,
 		...BOOTSTRAP_INDEXES,
 		...BOOTSTRAP_FULLTEXT,
+		...BOOTSTRAP_VECTOR,
 		...BOOTSTRAP_SCHEMA_SEED,
 	];
 }

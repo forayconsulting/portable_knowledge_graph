@@ -38,11 +38,12 @@ Entities can belong to a namespace (workspace partition). Use namespaces to orga
 
 ### Researching a Topic
 1. Call \`search()\` with keywords to discover relevant entities
-2. Call \`entity(get)\` for full details on interesting results
-3. Call \`traverse()\` to explore the neighborhood around key entities
-4. Call \`relate(query)\` to see specific relationships
-5. Call \`source(trace)\` to verify provenance
-6. **YOU** synthesize findings into a coherent answer
+2. Or use \`vector_search()\` with an embedding vector for semantic similarity
+3. Call \`entity(get)\` for full details on interesting results
+4. Call \`traverse()\` to explore the neighborhood around key entities
+5. Call \`relate(query)\` to see specific relationships
+6. Call \`source(trace)\` to verify provenance
+7. **YOU** synthesize findings into a coherent answer
 
 ### Extending the Ontology
 1. Call \`ontology(describe)\` to see current schema
@@ -61,6 +62,13 @@ Status definitions:
 - **provisional**: Single-source and unverified.
 - **speculative**: Inferred or weakly supported; based on reasoning rather than direct evidence.
 - **contested**: Sources actively disagree about this entity's claims or classification.
+
+## Vector Embeddings
+Entities support an optional \`embedding\` property (float array, default 1536 dimensions for text-embedding-3-small).
+The server stores and queries embeddings but never generates them. The client is responsible for:
+1. Generating embeddings for entity text using an embedding model
+2. Passing the embedding via the \`embedding\` parameter on \`entity(create)\`, \`entity(update)\`, or \`ingest(entities)\`
+3. Querying via \`vector_search()\` with a query embedding to find semantically similar entities
 
 ## Conventions
 - Entity IDs are UUIDs (auto-generated if omitted)

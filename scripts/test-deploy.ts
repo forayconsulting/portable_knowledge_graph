@@ -167,7 +167,10 @@ async function testProvisionAndTeardown() {
 				break;
 			}
 			if (state === "failed") {
-				fail(pollName, `Provisioning failed at step "${step}": ${body.error_message}`);
+				fail(
+					pollName,
+					`Provisioning failed at step "${step}": ${body.error_message}`,
+				);
 				break;
 			}
 		} catch (e) {

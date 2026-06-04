@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { buildPropertyFilter } from "../neo4j/properties";
 import type { SessionContext } from "../shared/types";
 
 export function registerSearchTool(server: McpServer, ctx: SessionContext) {
@@ -13,12 +14,13 @@ Returns entities ranked by relevance with their tags and a text excerpt. Use fil
 - entity_type: restrict to a specific type (e.g., "Concept", "Document", "Fact")
 - namespace: restrict to a workspace partition
 - tag: only entities tagged with a specific tag
+- property_filter: filter by promoted properties (e.g., {"author": "Jane Smith"})
 
 WORKFLOW: Start with search to discover what exists, then use entity(get) for full details,
 traverse() to explore neighborhoods, or relate(query) to see connections.
 
-YOU are responsible for interpreting results and determining relevance — the server performs
-keyword matching, not semantic understanding.`,
+This tool performs keyword matching. For semantic similarity search using embedding vectors,
+use the vector_search tool instead.`,
 		{
 			query: z.string().describe("Search keywords or phrase"),
 			entity_type: z
@@ -32,16 +34,34 @@ keyword matching, not semantic understanding.`,
 				.string()
 				.optional()
 				.describe("Filter to entities with this tag name"),
+			property_filter: z
+				.record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
+				.optional()
+				.describe(
+					'Filter by promoted properties. Keys are property names without the prop_ prefix. Example: {"author": "Jane Smith"}',
+				),
 			limit: z.number().optional().default(20).describe("Max results (1-100)"),
 			offset: z.number().optional().default(0).describe("Pagination offset"),
 		},
-		async ({ query, entity_type, namespace, tag, limit, offset }) => {
+		async ({
+			query,
+			entity_type,
+			namespace,
+			tag,
+			property_filter,
+			limit,
+			offset,
+		}) => {
 			try {
+				const pf = buildPropertyFilter(property_filter, "node");
+				const propWhere = pf.whereClauses.length
+					? ` AND ${pf.whereClauses.join(" AND ")}`
+					: "";
 				const rows = await neo4j.query(
 					`CALL db.index.fulltext.queryNodes("entity_search", $query)
            YIELD node, score
            WHERE ($entity_type IS NULL OR node.entity_type = $entity_type)
-             AND ($namespace IS NULL OR node.namespace = $namespace)
+             AND ($namespace IS NULL OR node.namespace = $namespace)${propWhere}
            WITH node, score
            OPTIONAL MATCH (node)-[:TAGGED_WITH]->(t:Tag)
            WITH node, score, collect(DISTINCT t.name) AS tags
@@ -59,6 +79,7 @@ keyword matching, not semantic understanding.`,
 						tag: tag ?? null,
 						offset,
 						limit,
+						...pf.params,
 					},
 				);
 

@@ -5,6 +5,7 @@ import {
 	BOOTSTRAP_FULLTEXT,
 	BOOTSTRAP_INDEXES,
 	BOOTSTRAP_SCHEMA_SEED,
+	BOOTSTRAP_VECTOR,
 } from "../bootstrap";
 
 describe("bootstrap", () => {
@@ -12,12 +13,16 @@ describe("bootstrap", () => {
 		expect(BOOTSTRAP_CONSTRAINTS).toHaveLength(3);
 	});
 
-	it("has 6 indexes", () => {
-		expect(BOOTSTRAP_INDEXES).toHaveLength(6);
+	it("has 8 indexes", () => {
+		expect(BOOTSTRAP_INDEXES).toHaveLength(8);
 	});
 
 	it("has 2 full-text indexes", () => {
 		expect(BOOTSTRAP_FULLTEXT).toHaveLength(2);
+	});
+
+	it("has 1 vector index", () => {
+		expect(BOOTSTRAP_VECTOR).toHaveLength(1);
 	});
 
 	it("seeds 4 entity types and 7 relationship types", () => {
@@ -37,6 +42,7 @@ describe("bootstrap", () => {
 			BOOTSTRAP_CONSTRAINTS.length +
 				BOOTSTRAP_INDEXES.length +
 				BOOTSTRAP_FULLTEXT.length +
+				BOOTSTRAP_VECTOR.length +
 				BOOTSTRAP_SCHEMA_SEED.length,
 		);
 	});

@@ -26,6 +26,7 @@ import { registerRelateTool } from "./tools/relate";
 import { registerSearchTool } from "./tools/search";
 import { registerSourceTool } from "./tools/source";
 import { registerTraverseTool } from "./tools/traverse";
+import { registerVectorSearchTool } from "./tools/vector-search";
 
 export class KnowledgeGraphMCP extends McpAgent<
 	Env,
@@ -85,6 +86,7 @@ export class KnowledgeGraphMCP extends McpAgent<
 
 		// Always registered (all roles)
 		registerSearchTool(this.server, ctx);
+		registerVectorSearchTool(this.server, ctx);
 		registerTraverseTool(this.server, ctx);
 		registerAnalyzeTool(this.server, ctx);
 

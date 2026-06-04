@@ -3,6 +3,7 @@ import {
 	BOOTSTRAP_FULLTEXT,
 	BOOTSTRAP_INDEXES,
 	BOOTSTRAP_SCHEMA_SEED,
+	BOOTSTRAP_VECTOR,
 } from "../src/neo4j/bootstrap";
 import type { Neo4jResponse, Neo4jStatement } from "../src/neo4j/types";
 
@@ -80,6 +81,7 @@ async function main() {
 	await runBatch("Constraints", BOOTSTRAP_CONSTRAINTS);
 	await runBatch("Indexes", BOOTSTRAP_INDEXES);
 	await runBatch("Full-text Indexes", BOOTSTRAP_FULLTEXT);
+	await runBatch("Vector Indexes", BOOTSTRAP_VECTOR);
 	await runBatch("Schema Seed", BOOTSTRAP_SCHEMA_SEED);
 
 	// Verify

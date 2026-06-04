@@ -18,6 +18,9 @@ Use this to:
 - Map the local structure around a concept
 - Follow relationship chains
 
+Filtering by relationship_types, entity_types, or namespace is applied inside the query,
+so only matching paths are traversed and returned.
+
 The result is a subgraph: {nodes: [...], edges: [...]} suitable for visualization or analysis.
 YOU decide what to do with the subgraph — the server just returns the raw structure.`,
 		{
@@ -53,15 +56,17 @@ YOU decide what to do with the subgraph — the server just returns the raw stru
 			const hops = Math.min(Math.max(max_hops, 1), 5);
 
 			try {
-				// Try APOC first
+				// Try APOC first — subgraphAll fetches the full neighborhood, then
+				// Cypher-side WHERE clauses filter before serialization to the Worker.
 				const rows = await neo4j.query(
 					`MATCH (start:Entity) WHERE start.id = $id OR start.name = $id
            CALL apoc.path.subgraphAll(start, {maxLevel: $hops}) YIELD nodes, relationships
            UNWIND nodes AS n
-           WITH CASE WHEN n:Entity THEN n ELSE null END AS entity,
-                CASE WHEN n:Tag THEN n ELSE null END AS tag,
-                CASE WHEN n:Source THEN n ELSE null END AS source,
-                n, relationships
+           WITH n, relationships
+           WHERE CASE WHEN n:Entity THEN
+             ($entity_types IS NULL OR n.entity_type IN $entity_types)
+             AND ($namespace IS NULL OR n.namespace = $namespace)
+           ELSE true END
            WITH collect(DISTINCT CASE
              WHEN n:Entity THEN {
                id: n.id, name: n.name, entity_type: n.entity_type,
@@ -84,6 +89,10 @@ YOU decide what to do with the subgraph — the server just returns the raw stru
              }
            END)[0..$limit_nodes] AS nodeList, relationships
            UNWIND relationships AS rel
+           WITH nodeList, rel
+           WHERE $rel_types IS NULL
+             OR type(rel) <> 'RELATES_TO'
+             OR rel.type IN $rel_types
            WITH nodeList, collect(DISTINCT {
              type: type(rel),
              rel_type: CASE WHEN type(rel) = 'RELATES_TO' THEN rel.type ELSE type(rel) END,
@@ -91,29 +100,19 @@ YOU decide what to do with the subgraph — the server just returns the raw stru
              to: coalesce(endNode(rel).id, endNode(rel).name)
            }) AS edgeList
            RETURN nodeList, edgeList`,
-					{ id: start_id, hops, limit_nodes },
+					{
+						id: start_id,
+						hops,
+						limit_nodes,
+						entity_types: entity_types?.length ? entity_types : null,
+						namespace: namespace ?? null,
+						rel_types: relationship_types?.length ? relationship_types : null,
+					},
 				);
 
 				if (rows.length && (rows[0][0] as unknown[])?.length) {
-					let nodes = rows[0][0] as Array<Record<string, unknown>>;
-					let edges = rows[0][1] as Array<Record<string, unknown>>;
-
-					if (entity_types?.length) {
-						const typeSet = new Set(entity_types);
-						nodes = nodes.filter(
-							(n) =>
-								n.label !== "Entity" || typeSet.has(n.entity_type as string),
-						);
-					}
-					if (namespace) {
-						nodes = nodes.filter(
-							(n) => n.label !== "Entity" || n.namespace === namespace,
-						);
-					}
-					if (relationship_types?.length) {
-						const relSet = new Set(relationship_types);
-						edges = edges.filter((e) => relSet.has(e.rel_type as string));
-					}
+					const nodes = rows[0][0] as Array<Record<string, unknown>>;
+					const edges = rows[0][1] as Array<Record<string, unknown>>;
 
 					return {
 						content: [
@@ -134,10 +133,21 @@ YOU decide what to do with the subgraph — the server just returns the raw stru
 					};
 				}
 
-				// Fallback without APOC
+				// Fallback without APOC — path-level filtering prunes during expansion
 				const fallback = await neo4j.query(
 					`MATCH (start:Entity) WHERE start.id = $id OR start.name = $id
            MATCH path = (start)-[*1..${hops}]-(connected)
+           WHERE ALL(r IN relationships(path) WHERE
+             $rel_types IS NULL
+             OR type(r) <> 'RELATES_TO'
+             OR r.type IN $rel_types
+           )
+           AND ALL(n IN nodes(path) WHERE
+             CASE WHEN n:Entity THEN
+               ($entity_types IS NULL OR n.entity_type IN $entity_types)
+               AND ($namespace IS NULL OR n.namespace = $namespace)
+             ELSE true END
+           )
            WITH start, collect(DISTINCT connected) + [start] AS allNodes,
                 [r IN reduce(acc = [], p IN collect(path) | acc + relationships(p)) | r] AS allRels
            UNWIND allNodes AS n
@@ -157,7 +167,13 @@ YOU decide what to do with the subgraph — the server just returns the raw stru
              to: coalesce(endNode(rel).id, endNode(rel).name)
            }) AS edges
            RETURN nodes, edges`,
-					{ id: start_id, limit_nodes },
+					{
+						id: start_id,
+						limit_nodes,
+						entity_types: entity_types?.length ? entity_types : null,
+						namespace: namespace ?? null,
+						rel_types: relationship_types?.length ? relationship_types : null,
+					},
 				);
 
 				const nodes = (fallback[0]?.[0] ?? []) as Array<

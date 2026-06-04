@@ -53,11 +53,6 @@ structural similarity. Or create SIMILAR_TO directly here if YOU have determined
 				.string()
 				.optional()
 				.describe("Relationship type (should match a __Schema:RelType)"),
-			weight: z
-				.number()
-				.optional()
-				.default(1.0)
-				.describe("Relationship weight"),
 			properties: z
 				.record(z.string(), z.unknown())
 				.optional()
@@ -108,7 +103,7 @@ structural similarity. Or create SIMILAR_TO directly here if YOU have determined
 						await neo4j.query(
 							`MATCH (a:Entity {id: $from_id}), (b:Entity {id: $to_id})
                CREATE (a)-[r:RELATES_TO {
-                 type: $rel_type, weight: $weight,
+                 type: $rel_type,
                  properties: $properties, created_by: $created_by,
                  created_at: datetime()
                }]->(b)
@@ -117,7 +112,6 @@ structural similarity. Or create SIMILAR_TO directly here if YOU have determined
 								from_id: params.from_id,
 								to_id: params.to_id,
 								rel_type: params.relationship_type,
-								weight: params.weight,
 								properties: params.properties
 									? JSON.stringify(params.properties)
 									: null,
@@ -160,7 +154,7 @@ structural similarity. Or create SIMILAR_TO directly here if YOU have determined
 						}
 						cypher += `
               WHERE $filter_rel_type IS NULL OR r.type = $filter_rel_type
-              RETURN other.id, other.name, other.entity_type, r.type, r.weight,
+              RETURN other.id, other.name, other.entity_type, r.type,
                      r.properties, r.created_by,
                      CASE WHEN startNode(r) = e THEN 'outgoing' ELSE 'incoming' END AS direction
               LIMIT $limit`;
@@ -170,12 +164,11 @@ structural similarity. Or create SIMILAR_TO directly here if YOU have determined
 							limit: params.limit,
 						});
 						const rels = rows.map(
-							([id, name, type, relType, weight, props, by, dir]) => ({
+							([id, name, type, relType, props, by, dir]) => ({
 								entity_id: id,
 								entity_name: name,
 								entity_type: type,
 								relationship_type: relType,
-								weight,
 								properties: props,
 								created_by: by,
 								direction: dir,
