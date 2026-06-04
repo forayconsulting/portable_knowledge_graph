@@ -2,6 +2,14 @@
 
 A multi-tenant knowledge graph platform that provisions isolated Neo4j instances on demand, connects them to Claude through MCP, and controls access with role-based permissions. Neo4j on Railway for storage, Cloudflare Workers for the interface, and Claude as the brain.
 
+## Why a knowledge graph
+
+RAG finds text that sounds relevant to a question. It works when the answer lives in a single passage, but it has no concept of how ideas relate to each other. Ask it to connect findings across twelve documents and it will retrieve the best-matching chunks from each, leaving the synthesis to the model's imagination.
+
+A knowledge graph gives an LLM something RAG cannot: ontological structure. Typed entities, named relationships, hierarchies, and explicit boundaries. The model does not search for text about a concept. It traverses the concept's actual connections, follows multi-hop paths, and reasons against a structure it can trust. When the graph says A relates to B through mechanism C, that is not a retrieval heuristic. It is a fact the model can cite and build on.
+
+GraphRAG moves toward this by building graphs to improve retrieval. But the graph still serves the retrieval pipeline: a better index, not a first-class reasoning substrate. Here, the graph is the product. Claude builds it, maintains it, and reasons with it directly. The difference is between an LLM that can find relevant information and one that has a structured understanding of a domain.
+
 ## What it does
 
 You connect it to Claude as a remote tool. Then you just talk to it. Claude reads your documents, pulls out the important pieces, decides how they relate to each other, and writes everything into the graph. No pipelines. No preprocessing. No local setup.
@@ -14,17 +22,39 @@ The server is deliberately simple. It stores data and answers queries. There are
 
 Each client graph is its own Railway project running its own Neo4j instance. This is physical isolation, not row-level filtering. One client's data cannot reach another, and tearing down a graph means deleting an entire Railway project with nothing left behind.
 
-A Factory Worker exposes a REST API for provisioning new graphs. You POST a graph ID and display name, and a Cloudflare Workflow creates the Railway project, deploys Neo4j, runs the bootstrap schema, encrypts the credentials, and marks the graph ready. The whole process takes a few minutes and reports its progress step by step. When a graph is no longer needed, a single DELETE removes the Railway project and the registry record.
-
 The MCP Worker handles all Claude connections. The graph ID lives in the URL path (`/mcp/acme-q3-audit`), so each Claude connector points at exactly one graph. Users with access to several graphs simply configure several connectors and scope conversations by toggling them on and off.
+
+## Automated provisioning
+
+A Factory Worker exposes a REST API for the full graph lifecycle. `POST /graphs` with an ID and display name, and a Cloudflare Workflow creates the Railway project, deploys Neo4j, configures the environment, waits for health, bootstraps the schema, encrypts credentials, and marks the graph ready. The whole process takes a few minutes and reports its progress step by step through `GET /graphs/{id}`.
+
+If any step fails, the workflow runs compensating actions: deleting the orphaned Railway project and marking the graph as failed with a clear error message. When a graph is no longer needed, `DELETE /graphs/{id}` removes the Railway project and the registry record in one call.
+
+Permissions are managed through `PUT /graphs/{id}/permissions`, and `GET /graphs` returns only the graphs accessible to the requesting user. The Factory also supports fleet-wide schema migrations across all active graphs through a single endpoint.
+
+## Authentication
+
+Every request passes through Cloudflare Access before it reaches the MCP server. Access handles identity (SSO, social login, one-time PINs) and forwards the authenticated email in a signed header. The MCP Worker never sees passwords or manages sessions.
+
+On top of Cloudflare Access, the MCP Worker runs an OAuth 2.0 authorization server. Claude initiates the standard authorization code flow, the worker verifies the Cloudflare Access identity, issues a token scoped to the user and graph, and Claude uses that token for all subsequent requests. This means Claude connects as the authenticated user, and every action is attributable.
+
+For programmatic access (CI pipelines, automation, cron jobs), Cloudflare Access service tokens bypass interactive login. The worker extracts the service identity from the JWT and maps it to a role like any other user.
 
 ## Role-based access
 
-Three roles control what each user can do. A reader can search, traverse, and analyze the graph. A writer can also create and update entities, ingest documents, and manage sources and ontology. An admin gets everything including entity deletion, raw Cypher, and namespace teardown.
+Three roles control what each user can do:
 
-Permissions are stored per graph as a map from email addresses or domain patterns to roles. The owner of a graph is always an admin. An entry like `@acme.com: writer` gives writer access to everyone at that domain. Graphs can also set a default role for anyone who authenticates, or leave it null to make the graph invite-only.
+- **Reader.** Search, traverse, and analyze the graph. Cannot modify anything.
+- **Writer.** Everything a reader can do, plus create and update entities, ingest documents, manage sources, and extend the ontology.
+- **Admin.** Everything a writer can do, plus delete entities, run raw Cypher, and tear down namespaces.
 
-Tool filtering happens at registration time. When a reader connects, destructive tools like `ingest` and `admin` are never registered, so Claude never sees them and cannot attempt to use them. As a second layer of defense, every destructive handler also checks the role at runtime before executing any Cypher.
+Permissions are stored per graph as a map from email addresses or domain patterns to roles. The owner of a graph is always an admin. An entry like `@acme.com: writer` gives writer access to everyone at that domain. Graphs can set a default role for any authenticated user, or leave it null to make the graph invite-only.
+
+Tool filtering happens at registration time. When a reader connects, destructive tools like `ingest` and `admin` are never registered, so Claude never sees them and cannot attempt to use them. Within multi-action tools like `entity` and `relate`, each role sees only its permitted actions. As a second layer, every destructive handler also checks the role at runtime before executing.
+
+## Encrypted credentials
+
+Neo4j credentials are encrypted at rest using AES-256-GCM before they are stored in the graph registry. Each graph has its own initialization vector. Credentials are decrypted per-request in the Worker's memory and never written to disk or logged.
 
 ## Epistemic status tracking
 
