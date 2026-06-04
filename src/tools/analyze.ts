@@ -16,9 +16,9 @@ Actions:
 - find_similar: Find entities sharing N+ tags (structural similarity)
 - epistemic_gaps: Find provisional entities with no SOURCED_FROM edge — candidates for verification
 - bridges: Find entities with RELATES_TO edges crossing namespace boundaries — reveals cross-domain concepts
+- search_similar: Find semantically similar entities using stored embedding vectors. Pass an entity_id; its embedding is used as the query vector. No embedding generation needed.
 
-These are structural queries. For SEMANTIC similarity (meaning-based), use the vector_search tool
-if entities have embeddings, or determine similarity yourself and write SIMILAR_TO edges via relate.`,
+These are structural queries except search_similar, which uses vector embeddings.`,
 		{
 			action: z.enum([
 				"stats",
@@ -27,6 +27,7 @@ if entities have embeddings, or determine similarity yourself and write SIMILAR_
 				"find_similar",
 				"epistemic_gaps",
 				"bridges",
+				"search_similar",
 			]),
 			from_id: z.string().optional().describe("Start entity for shortest_path"),
 			to_id: z.string().optional().describe("End entity for shortest_path"),
@@ -341,6 +342,75 @@ if entities have embeddings, or determine similarity yourself and write SIMILAR_
 												created_at: created,
 											}),
 										),
+										null,
+										2,
+									),
+								},
+							],
+						};
+					}
+
+					case "search_similar": {
+						if (!params.entity_id)
+							return {
+								content: [
+									{
+										type: "text" as const,
+										text: "Error: entity_id is required for search_similar",
+									},
+								],
+								isError: true,
+							};
+						const embRow = await neo4j.query(
+							"MATCH (e:Entity {id: $entity_id}) RETURN e.embedding",
+							{ entity_id: params.entity_id },
+						);
+						if (!embRow.length || !embRow[0][0])
+							return {
+								content: [
+									{
+										type: "text" as const,
+										text: JSON.stringify({
+											error: "no_embedding",
+											message: `Entity "${params.entity_id}" has no stored embedding vector`,
+										}),
+									},
+								],
+								isError: true,
+							};
+						const embedding = embRow[0][0] as number[];
+						const rows = await neo4j.query(
+							`CALL db.index.vector.queryNodes("entity_embedding", $k, $embedding)
+               YIELD node, score
+               WHERE node.id <> $entity_id
+                 AND ($entity_type IS NULL OR node.entity_type = $entity_type)
+                 AND ($namespace IS NULL OR node.namespace = $namespace)
+               RETURN node.id, node.name, node.entity_type, node.namespace,
+                      left(coalesce(node.summary, ''), 150), score
+               ORDER BY score DESC
+               LIMIT $limit`,
+							{
+								embedding,
+								k: (params.limit ?? 20) * 2,
+								entity_id: params.entity_id,
+								entity_type: params.entity_type ?? null,
+								namespace: params.namespace ?? null,
+								limit: params.limit,
+							},
+						);
+						return {
+							content: [
+								{
+									type: "text" as const,
+									text: JSON.stringify(
+										rows.map(([id, name, type, ns, summary, score]) => ({
+											id,
+											name,
+											entity_type: type,
+											namespace: ns,
+											summary,
+											similarity: score,
+										})),
 										null,
 										2,
 									),
