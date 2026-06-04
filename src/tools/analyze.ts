@@ -15,9 +15,10 @@ Actions:
 - neighbors: Degree analysis — which entities have the most connections
 - find_similar: Find entities sharing N+ tags (structural similarity)
 - epistemic_gaps: Find provisional entities with no SOURCED_FROM edge — candidates for verification
+- bridges: Find entities with RELATES_TO edges crossing namespace boundaries — reveals cross-domain concepts
 
-These are structural queries. For SEMANTIC similarity (meaning-based), YOU must determine
-similarity yourself and write SIMILAR_TO edges via the relate tool.`,
+These are structural queries. For SEMANTIC similarity (meaning-based), use the vector_search tool
+if entities have embeddings, or determine similarity yourself and write SIMILAR_TO edges via relate.`,
 		{
 			action: z.enum([
 				"stats",
@@ -25,6 +26,7 @@ similarity yourself and write SIMILAR_TO edges via the relate tool.`,
 				"neighbors",
 				"find_similar",
 				"epistemic_gaps",
+				"bridges",
 			]),
 			from_id: z.string().optional().describe("Start entity for shortest_path"),
 			to_id: z.string().optional().describe("End entity for shortest_path"),
@@ -43,6 +45,11 @@ similarity yourself and write SIMILAR_TO edges via the relate tool.`,
 				.optional()
 				.default(2)
 				.describe("Minimum shared tags for find_similar"),
+			min_namespaces: z
+				.number()
+				.optional()
+				.default(2)
+				.describe("Minimum foreign namespaces reached (bridges)"),
 			limit: z.number().optional().default(20),
 		},
 		async (params) => {
@@ -242,6 +249,47 @@ similarity yourself and write SIMILAR_TO edges via the relate tool.`,
 											shared_tags: tags,
 											shared_count: count,
 											similarity: sim,
+										})),
+										null,
+										2,
+									),
+								},
+							],
+						};
+					}
+
+					case "bridges": {
+						const rows = await neo4j.query(
+							`MATCH (e:Entity)-[:RELATES_TO]-(other:Entity)
+               WHERE other.namespace <> e.namespace
+                 AND e.namespace IS NOT NULL
+                 AND other.namespace IS NOT NULL
+                 AND ($namespace IS NULL OR e.namespace = $namespace)
+               WITH e, collect(DISTINCT other.namespace) AS foreign_namespaces
+               WITH e, foreign_namespaces, size(foreign_namespaces) AS ns_count
+               WHERE ns_count >= $min_namespaces
+               RETURN e.id, e.name, e.entity_type, e.namespace,
+                      ns_count, foreign_namespaces
+               ORDER BY ns_count DESC
+               LIMIT $limit`,
+							{
+								namespace: params.namespace ?? null,
+								min_namespaces: params.min_namespaces,
+								limit: params.limit,
+							},
+						);
+						return {
+							content: [
+								{
+									type: "text" as const,
+									text: JSON.stringify(
+										rows.map(([id, name, type, ns, nsCount, connectedNs]) => ({
+											id,
+											name,
+											entity_type: type,
+											namespace: ns,
+											namespaces_reached: nsCount,
+											connected_namespaces: connectedNs,
 										})),
 										null,
 										2,
