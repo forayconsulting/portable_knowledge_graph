@@ -48,6 +48,20 @@ export function promoteProperties(
 	};
 }
 
+// Setting a property to null removes it in Neo4j. Used on update to clear
+// promoted prop_* fields that are no longer present in the new properties.
+export function buildStalePropRemoval(
+	prevKeys: string[] | null | undefined,
+	newKeys: string[],
+	nodeAlias = "e",
+): string[] {
+	if (!prevKeys?.length) return [];
+	const next = new Set(newKeys);
+	return prevKeys
+		.filter((k) => VALID_KEY.test(k) && !next.has(k))
+		.map((k) => `${nodeAlias}.prop_${k} = null`);
+}
+
 export function buildPropertyFilter(
 	filter: Record<string, string | number | boolean> | undefined,
 	nodeAlias = "node",

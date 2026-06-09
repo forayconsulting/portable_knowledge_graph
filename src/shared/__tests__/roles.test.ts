@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+	ANALYZE_ACTIONS,
 	ENTITY_ACTIONS,
 	NAMESPACE_ACTIONS,
 	ONTOLOGY_ACTIONS,
@@ -25,6 +26,21 @@ describe("role-action matrices", () => {
 	it("admin has all entity actions", () => {
 		expect(ENTITY_ACTIONS.admin).toContain("create");
 		expect(ENTITY_ACTIONS.admin).toContain("delete");
+	});
+
+	it("merge is admin-only (it deletes the absorbed entity)", () => {
+		expect(ENTITY_ACTIONS.admin).toContain("merge");
+		expect(ENTITY_ACTIONS.writer).not.toContain("merge");
+		expect(ENTITY_ACTIONS.reader).not.toContain("merge");
+	});
+
+	it("all roles get the read-only analyze actions", () => {
+		const allRoles: Role[] = ["reader", "writer", "admin"];
+		for (const role of allRoles) {
+			expect(ANALYZE_ACTIONS[role]).toContain("validate");
+			expect(ANALYZE_ACTIONS[role]).toContain("find_duplicates");
+			expect(ANALYZE_ACTIONS[role]).toContain("stats");
+		}
 	});
 
 	it("reader can only query relationships", () => {

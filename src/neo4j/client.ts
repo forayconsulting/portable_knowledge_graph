@@ -53,6 +53,14 @@ export class Neo4jClient {
 		return result.results[idx]?.data.map((d) => d.row) ?? [];
 	}
 
+	rowCount(result: Neo4jResponse, idx = 0): number {
+		return result.results[idx]?.data.length ?? 0;
+	}
+
+	rowCounts(result: Neo4jResponse): number[] {
+		return result.results.map((r) => r.data.length);
+	}
+
 	async health(): Promise<{
 		connected: boolean;
 		version?: string;

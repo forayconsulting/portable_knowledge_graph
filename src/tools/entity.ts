@@ -1,19 +1,42 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { buildPropertyFilter, promoteProperties } from "../neo4j/properties";
+import {
+	buildPropertyFilter,
+	buildStalePropRemoval,
+	promoteProperties,
+} from "../neo4j/properties";
+import {
+	err,
+	missingParams,
+	ok,
+	paginated,
+	toolError,
+} from "../shared/responses";
 import type { SessionContext } from "../shared/types";
 
-const ALL_ACTIONS = ["create", "get", "update", "delete", "list"] as const;
+const ALL_ACTIONS = [
+	"create",
+	"get",
+	"update",
+	"delete",
+	"list",
+	"merge",
+] as const;
 
 const ACTION_DESCRIPTIONS: Record<string, string> = {
 	create:
 		"- create: Make a new entity. Requires name and entity_type at minimum. Returns the generated UUID.",
-	get: "- get: Fetch a single entity by ID with all its tags and sources.",
+	get: '- get: Fetch a single entity by ID with all its tags and sources. Use detail: "compact" to omit content and properties.',
 	update:
 		"- update: Modify fields on an existing entity. Only sends the fields you include.",
 	delete: "- delete: Remove an entity and all its relationships.",
-	list: "- list: Browse entities with optional filters. Paginated.",
+	list: "- list: Browse entities with optional filters. Paginated; returns total_count and has_more.",
+	merge:
+		"- merge: Absorb a duplicate entity into another. Rewires all relationships, tags, and source links from merge_from_id onto id, then deletes merge_from_id. Use analyze(find_duplicates) to find candidates.",
 };
+
+const NOT_FOUND_SUGGESTION =
+	"Use search or entity(list) to locate the correct entity id";
 
 export function registerEntityTool(
 	server: McpServer,
@@ -49,7 +72,7 @@ IMPORTANT: You do not need to create entity types before creating entities if th
 				.string()
 				.optional()
 				.describe(
-					"Entity ID (required for get/update/delete, auto-UUID on create)",
+					"Entity ID (required for get/update/delete, auto-UUID on create; the surviving entity for merge)",
 				),
 			name: z.string().optional().describe("Human-readable name"),
 			entity_type: z
@@ -94,6 +117,26 @@ IMPORTANT: You do not need to create entity types before creating entities if th
 				.optional()
 				.default("mcp:client")
 				.describe("Provenance stamp (e.g., 'claude:session-abc')"),
+			detail: z
+				.enum(["compact", "full"])
+				.optional()
+				.default("full")
+				.describe(
+					"Response detail for get/list. compact omits content and properties (get) or returns only id/name/entity_type (list).",
+				),
+			merge_from_id: z
+				.string()
+				.optional()
+				.describe(
+					"Entity to absorb and delete (for merge action; merged into id)",
+				),
+			fill_nulls: z
+				.boolean()
+				.optional()
+				.default(true)
+				.describe(
+					"For merge: fill null fields on the surviving entity from the absorbed one",
+				),
 			filter_type: z
 				.string()
 				.optional()
@@ -152,27 +195,11 @@ IMPORTANT: You do not need to create entity types before creating entities if th
 								...promoted.params,
 							},
 						);
-						return {
-							content: [
-								{
-									type: "text" as const,
-									text: JSON.stringify({ created: true, id }),
-								},
-							],
-						};
+						return ok({ created: true, id });
 					}
 
 					case "get": {
-						if (!params.id)
-							return {
-								content: [
-									{
-										type: "text" as const,
-										text: "Error: id is required for get",
-									},
-								],
-								isError: true,
-							};
+						if (!params.id) return missingParams("get", ["id"]);
 						const rows = await neo4j.query(
 							`MATCH (e:Entity {id: $id})
                OPTIONAL MATCH (e)-[:TAGGED_WITH]->(t:Tag)
@@ -182,40 +209,40 @@ IMPORTANT: You do not need to create entity types before creating entities if th
 							{ id: params.id },
 						);
 						if (!rows.length)
-							return {
-								content: [
-									{
-										type: "text" as const,
-										text: `Entity "${params.id}" not found`,
-									},
-								],
-							};
-						const [entity, tags, sources] = rows[0] as [
+							return err(`entity "${params.id}" not found`, {
+								not_found: [`entity id "${params.id}"`],
+								suggestion: NOT_FOUND_SUGGESTION,
+							});
+						const [entity, tags, rawSources] = rows[0] as [
 							Record<string, unknown>,
 							string[],
-							Array<{ id: string; name: string }>,
+							Array<{ id: string | null; name: string | null }>,
 						];
-						return {
-							content: [
-								{
-									type: "text" as const,
-									text: JSON.stringify({ ...entity, tags, sources }, null, 2),
-								},
-							],
+						// collect() over an unmatched OPTIONAL MATCH yields one
+						// null-valued struct; drop it.
+						const sources = rawSources.filter((s) => s.id !== null);
+						// Never ship the raw embedding vector back to the client —
+						// it is large and the client has no use for the floats.
+						const { embedding, ...fields } = entity;
+						const shaped: Record<string, unknown> = {
+							...fields,
+							has_embedding: embedding != null,
 						};
+						if (params.detail === "compact") {
+							const content = shaped.content;
+							delete shaped.content;
+							delete shaped.properties;
+							for (const key of Object.keys(shaped)) {
+								if (key.startsWith("prop_")) delete shaped[key];
+							}
+							shaped.content_length =
+								typeof content === "string" ? content.length : 0;
+						}
+						return ok({ ...shaped, tags, sources }, { pretty: true });
 					}
 
 					case "update": {
-						if (!params.id)
-							return {
-								content: [
-									{
-										type: "text" as const,
-										text: "Error: id is required for update",
-									},
-								],
-								isError: true,
-							};
+						if (!params.id) return missingParams("update", ["id"]);
 						const sets: string[] = ["e.updated_at = datetime()"];
 						const p: Record<string, unknown> = { id: params.id };
 						if (params.name !== undefined) {
@@ -239,6 +266,18 @@ IMPORTANT: You do not need to create entity types before creating entities if th
 							p.content = params.content;
 						}
 						if (params.properties !== undefined) {
+							// Read the previous prop_keys so promoted properties that are
+							// no longer present can be removed (set to null) rather than
+							// accumulating forever. Also serves as the existence check.
+							const prevRows = await neo4j.query(
+								"MATCH (e:Entity {id: $id}) RETURN e.prop_keys",
+								{ id: params.id },
+							);
+							if (!prevRows.length)
+								return err(`entity "${params.id}" not found`, {
+									not_found: [`entity id "${params.id}"`],
+									suggestion: NOT_FOUND_SUGGESTION,
+								});
 							sets.push("e.properties = $properties");
 							p.properties = JSON.stringify(params.properties);
 							const promoted = promoteProperties(params.properties);
@@ -248,6 +287,8 @@ IMPORTANT: You do not need to create entity types before creating entities if th
 								sets.push(clause);
 							}
 							Object.assign(p, promoted.params);
+							const prevKeys = prevRows[0]?.[0] as string[] | null;
+							sets.push(...buildStalePropRemoval(prevKeys, promoted.propKeys));
 						}
 						if (params.epistemic_status !== undefined) {
 							sets.push("e.epistemic_status = $epistemic_status");
@@ -265,54 +306,145 @@ IMPORTANT: You do not need to create entity types before creating entities if th
 							sets.push("e.embedding = $embedding");
 							p.embedding = params.embedding;
 						}
-						await neo4j.query(
+						const updatedRows = await neo4j.query(
 							`MATCH (e:Entity {id: $id}) SET ${sets.join(", ")} RETURN e.id`,
 							p,
 						);
-						return {
-							content: [
-								{
-									type: "text" as const,
-									text: JSON.stringify({ updated: true, id: params.id }),
-								},
-							],
-						};
+						if (!updatedRows.length)
+							return err(`entity "${params.id}" not found`, {
+								not_found: [`entity id "${params.id}"`],
+								suggestion: NOT_FOUND_SUGGESTION,
+							});
+						return ok({ updated: true, id: params.id });
 					}
 
 					case "delete": {
 						if (role !== "admin") {
-							return {
-								content: [
-									{
-										type: "text" as const,
-										text: "Forbidden: delete requires admin role",
-									},
-								],
-								isError: true,
-							};
+							return err("Forbidden: delete requires admin role");
 						}
-						if (!params.id)
-							return {
-								content: [
-									{
-										type: "text" as const,
-										text: "Error: id is required for delete",
-									},
-								],
-								isError: true,
-							};
-						await neo4j.query(
+						if (!params.id) return missingParams("delete", ["id"]);
+						const rows = await neo4j.query(
 							"MATCH (e:Entity {id: $id}) DETACH DELETE e RETURN count(e)",
 							{ id: params.id },
 						);
-						return {
-							content: [
+						const deleted = ((rows[0]?.[0] as number) ?? 0) > 0;
+						if (!deleted)
+							return err(`entity "${params.id}" not found`, {
+								not_found: [`entity id "${params.id}"`],
+								suggestion: NOT_FOUND_SUGGESTION,
+							});
+						return ok({ deleted: true, id: params.id });
+					}
+
+					case "merge": {
+						// Merge DETACH DELETEs the absorbed entity, so it sits at the
+						// same privilege tier as delete.
+						if (role !== "admin") {
+							return err("Forbidden: merge requires admin role");
+						}
+						if (!params.id || !params.merge_from_id)
+							return missingParams("merge", ["id", "merge_from_id"]);
+						if (params.id === params.merge_from_id)
+							return err("id and merge_from_id must be different entities");
+
+						const ids = { keep_id: params.id, drop_id: params.merge_from_id };
+						// One POST = one atomic transaction. Every statement MATCHes
+						// both entities so nothing partial happens if either is missing.
+						const statements = [
+							...(params.fill_nulls
+								? [
+										{
+											statement: `MATCH (a:Entity {id: $keep_id}) MATCH (b:Entity {id: $drop_id})
+                       SET a.summary = coalesce(a.summary, b.summary),
+                           a.content = coalesce(a.content, b.content),
+                           a.namespace = coalesce(a.namespace, b.namespace),
+                           a.embedding = coalesce(a.embedding, b.embedding)
+                       RETURN a.id`,
+											parameters: ids,
+										},
+									]
+								: []),
+							{
+								statement: `MATCH (a:Entity {id: $keep_id})
+                 MATCH (b:Entity {id: $drop_id})-[r:RELATES_TO]->(t:Entity)
+                 WHERE t.id <> $keep_id
+                 MERGE (a)-[r2:RELATES_TO {type: r.type}]->(t)
+                 ON CREATE SET r2.properties = r.properties,
+                               r2.created_by = r.created_by,
+                               r2.created_at = r.created_at
+                 RETURN count(*) AS n`,
+								parameters: ids,
+							},
+							{
+								statement: `MATCH (a:Entity {id: $keep_id})
+                 MATCH (s:Entity)-[r:RELATES_TO]->(b:Entity {id: $drop_id})
+                 WHERE s.id <> $keep_id
+                 MERGE (s)-[r2:RELATES_TO {type: r.type}]->(a)
+                 ON CREATE SET r2.properties = r.properties,
+                               r2.created_by = r.created_by,
+                               r2.created_at = r.created_at
+                 RETURN count(*) AS n`,
+								parameters: ids,
+							},
+							{
+								statement: `MATCH (a:Entity {id: $keep_id})
+                 MATCH (b:Entity {id: $drop_id})-[:TAGGED_WITH]->(t:Tag)
+                 MERGE (a)-[:TAGGED_WITH]->(t)
+                 RETURN count(*) AS n`,
+								parameters: ids,
+							},
+							{
+								statement: `MATCH (a:Entity {id: $keep_id})
+                 MATCH (b:Entity {id: $drop_id})-[r:SOURCED_FROM]->(s:Source)
+                 MERGE (a)-[r2:SOURCED_FROM]->(s)
+                 ON CREATE SET r2.confidence = r.confidence, r2.excerpt = r.excerpt
+                 RETURN count(*) AS n`,
+								parameters: ids,
+							},
+							{
+								statement: `MATCH (a:Entity {id: $keep_id}) MATCH (b:Entity {id: $drop_id})
+                 DETACH DELETE b RETURN 1`,
+								parameters: ids,
+							},
+						];
+						const result = await neo4j.execute(statements);
+						const last = statements.length - 1;
+						if (neo4j.rowCount(result, last) === 0) {
+							const probe = await neo4j.execute([
 								{
-									type: "text" as const,
-									text: JSON.stringify({ deleted: true, id: params.id }),
+									statement: `OPTIONAL MATCH (a:Entity {id: $keep_id})
+                   OPTIONAL MATCH (b:Entity {id: $drop_id})
+                   RETURN a.id IS NOT NULL, b.id IS NOT NULL`,
+									parameters: ids,
 								},
-							],
-						};
+							]);
+							const [keepExists, dropExists] = (neo4j.rows(probe, 0)[0] ?? [
+								false,
+								false,
+							]) as [boolean, boolean];
+							const notFound: string[] = [];
+							if (!keepExists) notFound.push(`id "${params.id}"`);
+							if (!dropExists)
+								notFound.push(`merge_from_id "${params.merge_from_id}"`);
+							return err("merge aborted: entity not found", {
+								not_found: notFound,
+								suggestion: NOT_FOUND_SUGGESTION,
+							});
+						}
+						const offset = params.fill_nulls ? 1 : 0;
+						const countAt = (idx: number) =>
+							(neo4j.rows(result, idx)[0]?.[0] as number) ?? 0;
+						return ok({
+							merged: true,
+							kept: params.id,
+							deleted: params.merge_from_id,
+							rewired: {
+								relates_to_out: countAt(offset),
+								relates_to_in: countAt(offset + 1),
+								tags: countAt(offset + 2),
+								sources: countAt(offset + 3),
+							},
+						});
 					}
 
 					case "list": {
@@ -320,65 +452,60 @@ IMPORTANT: You do not need to create entity types before creating entities if th
 						const propWhere = pf.whereClauses.length
 							? ` AND ${pf.whereClauses.join(" AND ")}`
 							: "";
-						const rows = await neo4j.query(
-							`MATCH (e:Entity)
-               WHERE ($filter_type IS NULL OR e.entity_type = $filter_type)
-                 AND ($filter_namespace IS NULL OR e.namespace = $filter_namespace)${propWhere}
+						const whereClause = `WHERE ($filter_type IS NULL OR e.entity_type = $filter_type)
+                 AND ($filter_namespace IS NULL OR e.namespace = $filter_namespace)${propWhere}`;
+						const filterParams = {
+							filter_type: params.filter_type ?? null,
+							filter_namespace: params.filter_namespace ?? null,
+							...pf.params,
+						};
+						const result = await neo4j.execute([
+							{
+								statement: `MATCH (e:Entity) ${whereClause} RETURN count(e)`,
+								parameters: filterParams,
+							},
+							{
+								statement: `MATCH (e:Entity)
+               ${whereClause}
                WITH e ORDER BY e.created_at DESC
                SKIP $offset LIMIT $limit
                OPTIONAL MATCH (e)-[:TAGGED_WITH]->(t:Tag)
                RETURN e.id, e.name, e.entity_type, e.namespace,
                       left(coalesce(e.summary, ''), 100),
                       collect(DISTINCT t.name) AS tags`,
-							{
-								filter_type: params.filter_type ?? null,
-								filter_namespace: params.filter_namespace ?? null,
-								offset: params.offset,
-								limit: params.limit,
-								...pf.params,
-							},
-						);
-						const entities = rows.map(
-							([id, name, type, ns, summary, tags]) => ({
-								id,
-								name,
-								entity_type: type,
-								namespace: ns,
-								summary,
-								tags,
-							}),
-						);
-						return {
-							content: [
-								{
-									type: "text" as const,
-									text: JSON.stringify(entities, null, 2),
+								parameters: {
+									...filterParams,
+									offset: params.offset,
+									limit: params.limit,
 								},
-							],
-						};
+							},
+						]);
+						const totalCount = (neo4j.rows(result, 0)[0]?.[0] as number) ?? 0;
+						const entities = neo4j.rows(result, 1).map(
+							params.detail === "compact"
+								? ([id, name, type]) => ({ id, name, entity_type: type })
+								: ([id, name, type, ns, summary, tags]) => ({
+										id,
+										name,
+										entity_type: type,
+										namespace: ns,
+										summary,
+										tags,
+									}),
+						);
+						return paginated(entities, {
+							total_count: totalCount,
+							offset: params.offset,
+							limit: params.limit,
+							has_more: params.offset + entities.length < totalCount,
+						});
 					}
 
 					default:
-						return {
-							content: [
-								{
-									type: "text" as const,
-									text: `Unknown action: ${params.action}`,
-								},
-							],
-							isError: true,
-						};
+						return err(`Unknown action: ${params.action}`);
 				}
 			} catch (error) {
-				return {
-					content: [
-						{
-							type: "text" as const,
-							text: `Entity error: ${error instanceof Error ? error.message : String(error)}`,
-						},
-					],
-					isError: true,
-				};
+				return toolError("Entity", error);
 			}
 		},
 	);

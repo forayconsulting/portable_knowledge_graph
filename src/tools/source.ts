@@ -1,5 +1,12 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import {
+	err,
+	missingParams,
+	ok,
+	paginated,
+	toolError,
+} from "../shared/responses";
 import type { SessionContext } from "../shared/types";
 
 const ALL_ACTIONS = ["create", "get", "list", "link", "trace"] as const;
@@ -7,7 +14,7 @@ const ALL_ACTIONS = ["create", "get", "list", "link", "trace"] as const;
 const ACTION_DESCRIPTIONS: Record<string, string> = {
 	create: "- create: Create a new Source record",
 	get: "- get: Get a source by ID with all linked entities",
-	list: "- list: List sources with optional type filter",
+	list: "- list: List sources with optional type filter. Paginated.",
 	link: "- link: Link an entity to a source (shortcut for relate(source))",
 	trace:
 		"- trace: Trace the full provenance chain for an entity (what sources contributed to it)",
@@ -44,6 +51,8 @@ ${actionDocs}`,
 			source_id: z.string().optional().describe("Source ID for link"),
 			confidence: z
 				.number()
+				.min(0)
+				.max(1)
 				.optional()
 				.default(1.0)
 				.describe("Confidence for link (0-1)"),
@@ -59,6 +68,7 @@ ${actionDocs}`,
 				.default(3)
 				.describe("Max depth for trace"),
 			limit: z.number().optional().default(50),
+			offset: z.number().optional().default(0).describe("Pagination offset"),
 		},
 		async (params) => {
 			try {
@@ -79,24 +89,11 @@ ${actionDocs}`,
 								created_by: params.created_by,
 							},
 						);
-						return {
-							content: [
-								{
-									type: "text" as const,
-									text: JSON.stringify({ created: true, id }),
-								},
-							],
-						};
+						return ok({ created: true, id });
 					}
 
 					case "get": {
-						if (!params.id)
-							return {
-								content: [
-									{ type: "text" as const, text: "Error: id is required" },
-								],
-								isError: true,
-							};
+						if (!params.id) return missingParams("get", ["id"]);
 						const rows = await neo4j.query(
 							`MATCH (s:Source {id: $id})
                OPTIONAL MATCH (e:Entity)-[r:SOURCED_FROM]->(s)
@@ -107,75 +104,67 @@ ${actionDocs}`,
 							{ id: params.id },
 						);
 						if (!rows.length)
-							return {
-								content: [
-									{
-										type: "text" as const,
-										text: `Source "${params.id}" not found`,
-									},
-								],
-							};
-						return {
-							content: [
-								{
-									type: "text" as const,
-									text: JSON.stringify(
-										{ source: rows[0][0], linked_entities: rows[0][1] },
-										null,
-										2,
-									),
-								},
-							],
-						};
+							return err(`source "${params.id}" not found`, {
+								not_found: [`source id "${params.id}"`],
+								suggestion: "Use source(list) to see available sources",
+							});
+						// collect() over an unmatched OPTIONAL MATCH yields one
+						// null-valued struct; drop it.
+						const linked = (
+							rows[0][1] as Array<{ entity_id: string | null }>
+						).filter((l) => l.entity_id !== null);
+						return ok(
+							{ source: rows[0][0], linked_entities: linked },
+							{ pretty: true },
+						);
 					}
 
 					case "list": {
-						const rows = await neo4j.query(
-							`MATCH (s:Source)
-               WHERE $filter_type IS NULL OR s.source_type = $filter_type
-               OPTIONAL MATCH (e:Entity)-[:SOURCED_FROM]->(s)
-               RETURN s.id, s.name, s.source_type, s.uri, s.ingested_at,
-                      count(e) AS linked_count
-               ORDER BY s.ingested_at DESC
-               LIMIT $limit`,
+						const result = await neo4j.execute([
 							{
-								filter_type: params.filter_type ?? null,
-								limit: params.limit,
+								statement: `MATCH (s:Source)
+                 WHERE $filter_type IS NULL OR s.source_type = $filter_type
+                 RETURN count(s)`,
+								parameters: { filter_type: params.filter_type ?? null },
 							},
-						);
-						return {
-							content: [
-								{
-									type: "text" as const,
-									text: JSON.stringify(
-										rows.map(([id, name, type, uri, date, count]) => ({
-											id,
-											name,
-											source_type: type,
-											uri,
-											ingested_at: date,
-											linked_entities: count,
-										})),
-										null,
-										2,
-									),
+							{
+								statement: `MATCH (s:Source)
+                 WHERE $filter_type IS NULL OR s.source_type = $filter_type
+                 OPTIONAL MATCH (e:Entity)-[:SOURCED_FROM]->(s)
+                 RETURN s.id, s.name, s.source_type, s.uri, s.ingested_at,
+                        count(e) AS linked_count
+                 ORDER BY s.ingested_at DESC
+                 SKIP $offset LIMIT $limit`,
+								parameters: {
+									filter_type: params.filter_type ?? null,
+									offset: params.offset,
+									limit: params.limit,
 								},
-							],
-						};
+							},
+						]);
+						const totalCount = (neo4j.rows(result, 0)[0]?.[0] as number) ?? 0;
+						const sources = neo4j
+							.rows(result, 1)
+							.map(([id, name, type, uri, date, count]) => ({
+								id,
+								name,
+								source_type: type,
+								uri,
+								ingested_at: date,
+								linked_entities: count,
+							}));
+						return paginated(sources, {
+							total_count: totalCount,
+							offset: params.offset,
+							limit: params.limit,
+							has_more: params.offset + sources.length < totalCount,
+						});
 					}
 
 					case "link": {
 						if (!params.entity_id || !params.source_id)
-							return {
-								content: [
-									{
-										type: "text" as const,
-										text: "Error: entity_id and source_id are required",
-									},
-								],
-								isError: true,
-							};
-						await neo4j.query(
+							return missingParams("link", ["entity_id", "source_id"]);
+						const rows = await neo4j.query(
 							`MATCH (e:Entity {id: $entity_id}), (s:Source {id: $source_id})
                MERGE (e)-[r:SOURCED_FROM]->(s)
                SET r.confidence = $confidence, r.excerpt = $excerpt,
@@ -189,31 +178,23 @@ ${actionDocs}`,
 								created_by: params.created_by,
 							},
 						);
-						return {
-							content: [
-								{
-									type: "text" as const,
-									text: JSON.stringify({
-										linked: true,
-										entity: params.entity_id,
-										source: params.source_id,
-									}),
-								},
-							],
-						};
+						if (!rows.length)
+							return err("source not linked: entity or source not found", {
+								not_found: [
+									`entity_id "${params.entity_id}" and/or source_id "${params.source_id}"`,
+								],
+								suggestion:
+									"Verify both ids exist via entity(get) and source(get)",
+							});
+						return ok({
+							linked: true,
+							entity: params.entity_id,
+							source: params.source_id,
+						});
 					}
 
 					case "trace": {
-						if (!params.entity_id)
-							return {
-								content: [
-									{
-										type: "text" as const,
-										text: "Error: entity_id is required for trace",
-									},
-								],
-								isError: true,
-							};
+						if (!params.entity_id) return missingParams("trace", ["entity_id"]);
 						const rows = await neo4j.query(
 							`MATCH (e:Entity {id: $entity_id})-[r:SOURCED_FROM]->(s:Source)
                RETURN s.id, s.name, s.source_type, s.uri,
@@ -221,53 +202,27 @@ ${actionDocs}`,
                ORDER BY r.confidence DESC`,
 							{ entity_id: params.entity_id },
 						);
-						return {
-							content: [
-								{
-									type: "text" as const,
-									text: JSON.stringify(
-										{
-											entity_id: params.entity_id,
-											sources: rows.map(
-												([id, name, type, uri, conf, excerpt]) => ({
-													id,
-													name,
-													source_type: type,
-													uri,
-													confidence: conf,
-													excerpt,
-												}),
-											),
-										},
-										null,
-										2,
-									),
-								},
-							],
-						};
+						return ok(
+							{
+								entity_id: params.entity_id,
+								sources: rows.map(([id, name, type, uri, conf, excerpt]) => ({
+									id,
+									name,
+									source_type: type,
+									uri,
+									confidence: conf,
+									excerpt,
+								})),
+							},
+							{ pretty: true },
+						);
 					}
 
 					default:
-						return {
-							content: [
-								{
-									type: "text" as const,
-									text: `Unknown action: ${params.action}`,
-								},
-							],
-							isError: true,
-						};
+						return err(`Unknown action: ${params.action}`);
 				}
 			} catch (error) {
-				return {
-					content: [
-						{
-							type: "text" as const,
-							text: `Source error: ${error instanceof Error ? error.message : String(error)}`,
-						},
-					],
-					isError: true,
-				};
+				return toolError("Source", error);
 			}
 		},
 	);

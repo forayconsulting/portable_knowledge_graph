@@ -3,7 +3,27 @@ import type { Role } from "./types";
 export const ENTITY_ACTIONS: Record<Role, readonly string[]> = {
 	reader: ["get", "list"],
 	writer: ["create", "get", "update", "list"],
-	admin: ["create", "get", "update", "delete", "list"],
+	// merge DETACH DELETEs the absorbed entity, so it sits at delete's tier
+	admin: ["create", "get", "update", "delete", "list", "merge"],
+};
+
+const ANALYZE_ALL = [
+	"stats",
+	"shortest_path",
+	"neighbors",
+	"find_similar",
+	"epistemic_gaps",
+	"bridges",
+	"search_similar",
+	"validate",
+	"find_duplicates",
+] as const;
+
+// All analyze actions are read-only, so every role gets the full set.
+export const ANALYZE_ACTIONS: Record<Role, readonly string[]> = {
+	reader: ANALYZE_ALL,
+	writer: ANALYZE_ALL,
+	admin: ANALYZE_ALL,
 };
 
 export const RELATE_ACTIONS: Record<Role, readonly string[]> = {

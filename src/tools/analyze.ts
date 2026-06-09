@@ -1,34 +1,59 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { err, missingParams, ok, toolError } from "../shared/responses";
 import type { SessionContext } from "../shared/types";
 
-export function registerAnalyzeTool(server: McpServer, ctx: SessionContext) {
+const ALL_ACTIONS = [
+	"stats",
+	"shortest_path",
+	"neighbors",
+	"find_similar",
+	"epistemic_gaps",
+	"bridges",
+	"search_similar",
+	"validate",
+	"find_duplicates",
+] as const;
+
+const ACTION_DESCRIPTIONS: Record<string, string> = {
+	stats:
+		"- stats: Full graph statistics (node/edge counts by type, namespace, top tags)",
+	shortest_path: "- shortest_path: Find shortest path between two entities",
+	neighbors:
+		"- neighbors: Degree analysis — which entities have the most connections",
+	find_similar:
+		"- find_similar: Find entities sharing N+ tags (structural similarity)",
+	epistemic_gaps:
+		"- epistemic_gaps: Find provisional entities with no SOURCED_FROM edge — candidates for verification",
+	bridges:
+		"- bridges: Find entities with RELATES_TO edges crossing namespace boundaries — reveals cross-domain concepts",
+	search_similar:
+		"- search_similar: Find semantically similar entities using stored embedding vectors. Pass an entity_id; its embedding is used as the query vector. No embedding generation needed.",
+	validate:
+		"- validate: Detect schema drift — entity types, relationship types, and namespaces used in the graph but missing from the __Schema ontology, plus stale promoted properties.",
+	find_duplicates:
+		"- find_duplicates: Find entities with the same normalized name (candidate duplicates). Review the groups and use entity(merge) to consolidate true duplicates.",
+};
+
+export function registerAnalyzeTool(
+	server: McpServer,
+	ctx: SessionContext,
+	allowedActions?: readonly string[],
+) {
 	const { neo4j } = ctx;
+	const actions = allowedActions ?? ALL_ACTIONS;
+	const actionDocs = actions.map((a) => ACTION_DESCRIPTIONS[a]).join("\n");
 
 	server.tool(
 		"analyze",
 		`Run structural graph analytics. No AI — just Cypher-based analysis.
 
 Actions:
-- stats: Full graph statistics (node/edge counts by type, namespace, top tags)
-- shortest_path: Find shortest path between two entities
-- neighbors: Degree analysis — which entities have the most connections
-- find_similar: Find entities sharing N+ tags (structural similarity)
-- epistemic_gaps: Find provisional entities with no SOURCED_FROM edge — candidates for verification
-- bridges: Find entities with RELATES_TO edges crossing namespace boundaries — reveals cross-domain concepts
-- search_similar: Find semantically similar entities using stored embedding vectors. Pass an entity_id; its embedding is used as the query vector. No embedding generation needed.
+${actionDocs}
 
 These are structural queries except search_similar, which uses vector embeddings.`,
 		{
-			action: z.enum([
-				"stats",
-				"shortest_path",
-				"neighbors",
-				"find_similar",
-				"epistemic_gaps",
-				"bridges",
-				"search_similar",
-			]),
+			action: z.enum(actions as unknown as [string, ...string[]]),
 			from_id: z.string().optional().describe("Start entity for shortest_path"),
 			to_id: z.string().optional().describe("End entity for shortest_path"),
 			max_depth: z.number().optional().default(10).describe("Max path length"),
@@ -51,6 +76,13 @@ These are structural queries except search_similar, which uses vector embeddings
 				.optional()
 				.default(2)
 				.describe("Minimum foreign namespaces reached (bridges)"),
+			match_type: z
+				.boolean()
+				.optional()
+				.default(false)
+				.describe(
+					"For find_duplicates: only group entities that also share the same entity_type",
+				),
 			limit: z.number().optional().default(20),
 		},
 		async (params) => {
@@ -117,15 +149,7 @@ These are structural queries except search_similar, which uses vector embeddings
 
 					case "shortest_path": {
 						if (!params.from_id || !params.to_id)
-							return {
-								content: [
-									{
-										type: "text" as const,
-										text: "Error: from_id and to_id are required",
-									},
-								],
-								isError: true,
-							};
+							return missingParams("shortest_path", ["from_id", "to_id"]);
 						const rows = await neo4j.query(
 							`MATCH (a:Entity {id: $from_id}), (b:Entity {id: $to_id}),
                      path = shortestPath((a)-[*..${Math.min(params.max_depth, 15)}]-(b))
@@ -210,15 +234,7 @@ These are structural queries except search_similar, which uses vector embeddings
 
 					case "find_similar": {
 						if (!params.entity_id)
-							return {
-								content: [
-									{
-										type: "text" as const,
-										text: "Error: entity_id is required for find_similar",
-									},
-								],
-								isError: true,
-							};
+							return missingParams("find_similar", ["entity_id"]);
 						const rows = await neo4j.query(
 							`MATCH (e:Entity {id: $entity_id})-[:TAGGED_WITH]->(t:Tag)<-[:TAGGED_WITH]-(other:Entity)
                WHERE other.id <> $entity_id
@@ -352,32 +368,19 @@ These are structural queries except search_similar, which uses vector embeddings
 
 					case "search_similar": {
 						if (!params.entity_id)
-							return {
-								content: [
-									{
-										type: "text" as const,
-										text: "Error: entity_id is required for search_similar",
-									},
-								],
-								isError: true,
-							};
+							return missingParams("search_similar", ["entity_id"]);
 						const embRow = await neo4j.query(
 							"MATCH (e:Entity {id: $entity_id}) RETURN e.embedding",
 							{ entity_id: params.entity_id },
 						);
 						if (!embRow.length || !embRow[0][0])
-							return {
-								content: [
-									{
-										type: "text" as const,
-										text: JSON.stringify({
-											error: "no_embedding",
-											message: `Entity "${params.entity_id}" has no stored embedding vector`,
-										}),
-									},
-								],
-								isError: true,
-							};
+							return err(
+								`entity "${params.entity_id}" has no stored embedding vector`,
+								{
+									suggestion:
+										"Store an embedding via entity(update) with the embedding parameter, or use search for keyword matching instead",
+								},
+							);
 						const embedding = embRow[0][0] as number[];
 						const rows = await neo4j.query(
 							`CALL db.index.vector.queryNodes("entity_embedding", $k, $embedding)
@@ -418,17 +421,122 @@ These are structural queries except search_similar, which uses vector embeddings
 							],
 						};
 					}
+					case "validate": {
+						// Schema drift report. OPTIONAL MATCH ... WHERE m IS NULL keeps
+						// this portable across Neo4j 4.x and 5.x.
+						const result = await neo4j.execute([
+							{
+								statement: `MATCH (e:Entity)
+                 WITH e.entity_type AS t, count(e) AS cnt, collect(e.id)[0..10] AS sample_ids
+                 OPTIONAL MATCH (m:__Schema:EntityType {name: t})
+                 WITH t, cnt, sample_ids, m WHERE m IS NULL
+                 RETURN t, cnt, sample_ids ORDER BY cnt DESC`,
+							},
+							{
+								statement: `MATCH ()-[r:RELATES_TO]->()
+                 WITH r.type AS t, count(r) AS cnt
+                 OPTIONAL MATCH (m:__Schema:RelType {name: t})
+                 WITH t, cnt, m WHERE m IS NULL
+                 RETURN t, cnt ORDER BY cnt DESC`,
+							},
+							{
+								statement: `MATCH (e:Entity) WHERE e.namespace IS NOT NULL
+                 WITH e.namespace AS ns, count(e) AS cnt
+                 OPTIONAL MATCH (m:__Schema:Namespace {name: ns})
+                 WITH ns, cnt, m WHERE m IS NULL
+                 RETURN ns, cnt ORDER BY cnt DESC`,
+							},
+							{
+								statement: `MATCH (e:Entity)
+                 WITH e, [k IN keys(e) WHERE k STARTS WITH 'prop_' AND k <> 'prop_keys'] AS pk
+                 WITH e, [k IN pk WHERE NOT substring(k, 5) IN coalesce(e.prop_keys, [])] AS stale
+                 WHERE size(stale) > 0
+                 RETURN e.id, e.name, stale LIMIT $limit`,
+								parameters: { limit: params.limit },
+							},
+						]);
+						const entityTypeDrift = neo4j
+							.rows(result, 0)
+							.map(([t, cnt, ids]) => ({
+								entity_type: t,
+								count: cnt,
+								sample_ids: ids,
+							}));
+						const relTypeDrift = neo4j
+							.rows(result, 1)
+							.map(([t, cnt]) => ({ relationship_type: t, count: cnt }));
+						const namespaceDrift = neo4j
+							.rows(result, 2)
+							.map(([ns, cnt]) => ({ namespace: ns, count: cnt }));
+						const staleProps = neo4j
+							.rows(result, 3)
+							.map(([id, name, stale]) => ({
+								id,
+								name,
+								stale_prop_keys: stale,
+							}));
+						const clean =
+							!entityTypeDrift.length &&
+							!relTypeDrift.length &&
+							!namespaceDrift.length &&
+							!staleProps.length;
+						return ok({
+							clean,
+							entity_type_drift: entityTypeDrift,
+							rel_type_drift: relTypeDrift,
+							namespace_drift: namespaceDrift,
+							stale_properties: staleProps,
+							...(clean
+								? {}
+								: {
+										suggestion:
+											"Register missing types/namespaces via ontology(batch_create) or namespace(create), or fix the offending entities. Stale prop_* keys are cleaned automatically the next time the entity's properties are updated.",
+									}),
+						});
+					}
+
+					case "find_duplicates": {
+						const rows = await neo4j.query(
+							`MATCH (e:Entity)
+               WHERE ($namespace IS NULL OR e.namespace = $namespace)
+                 AND ($entity_type IS NULL OR e.entity_type = $entity_type)
+               WITH toLower(trim(e.name)) AS norm,
+                    e.namespace AS ns,
+                    CASE WHEN $match_type THEN e.entity_type ELSE '' END AS tkey,
+                    collect({id: e.id, name: e.name, entity_type: e.entity_type}) AS dups
+               WHERE size(dups) > 1
+               RETURN norm, ns, dups, size(dups) AS cnt
+               ORDER BY cnt DESC LIMIT $limit`,
+							{
+								namespace: params.namespace ?? null,
+								entity_type: params.entity_type ?? null,
+								match_type: params.match_type,
+								limit: params.limit,
+							},
+						);
+						const groups = rows.map(([norm, ns, dups, cnt]) => ({
+							normalized_name: norm,
+							namespace: ns,
+							count: cnt,
+							entities: dups,
+						}));
+						return ok({
+							duplicate_groups: groups,
+							group_count: groups.length,
+							...(groups.length
+								? {
+										suggestion:
+											"Review each group and call entity(merge) with id (keep) and merge_from_id (absorb) for true duplicates",
+									}
+								: {}),
+						});
+					}
+
+					default:
+						return err(`Unknown action: ${params.action}`);
 				}
 			} catch (error) {
-				return {
-					content: [
-						{
-							type: "text" as const,
-							text: `Analyze error: ${error instanceof Error ? error.message : String(error)}`,
-						},
-					],
-					isError: true,
-				};
+				return toolError("Analyze", error);
 			}
 		},
 	);

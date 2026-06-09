@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { err, missingParams, ok, toolError } from "../shared/responses";
 import type { SessionContext } from "../shared/types";
 
 const ALL_ACTIONS = [
@@ -13,7 +14,7 @@ const ALL_ACTIONS = [
 
 const ACTION_DESCRIPTIONS: Record<string, string> = {
 	create:
-		"- create: Link two entities with a typed relationship. YOU decide the type and weight.",
+		"- create: Link two entities with a typed relationship. Idempotent — re-creating an existing (from, to, type) edge reports already_existed instead of duplicating. YOU decide the type.",
 	query:
 		"- query: Get all relationships for a node (filtered by type/direction).",
 	delete: "- delete: Remove a specific relationship.",
@@ -22,6 +23,9 @@ const ACTION_DESCRIPTIONS: Record<string, string> = {
 	source:
 		"- source: Link an entity to a Source node (creates SOURCED_FROM edge with confidence).",
 };
+
+const ENTITY_NOT_FOUND_SUGGESTION =
+	"Use search or entity(list) to locate the correct entity id";
 
 export function registerRelateTool(
 	server: McpServer,
@@ -56,7 +60,9 @@ structural similarity. Or create SIMILAR_TO directly here if YOU have determined
 			properties: z
 				.record(z.string(), z.unknown())
 				.optional()
-				.describe("Edge properties"),
+				.describe(
+					"Edge properties. Set on creation only — re-creating an existing edge does not overwrite them.",
+				),
 			created_by: z
 				.string()
 				.optional()
@@ -80,6 +86,8 @@ structural similarity. Or create SIMILAR_TO directly here if YOU have determined
 			source_id: z.string().optional().describe("Source ID for source action"),
 			confidence: z
 				.number()
+				.min(0)
+				.max(1)
 				.optional()
 				.default(1.0)
 				.describe("Confidence for source link (0-1)"),
@@ -91,59 +99,66 @@ structural similarity. Or create SIMILAR_TO directly here if YOU have determined
 				switch (params.action) {
 					case "create": {
 						if (!params.from_id || !params.to_id || !params.relationship_type)
-							return {
-								content: [
-									{
-										type: "text" as const,
-										text: "Error: from_id, to_id, and relationship_type are required",
-									},
-								],
-								isError: true,
-							};
-						await neo4j.query(
-							`MATCH (a:Entity {id: $from_id}), (b:Entity {id: $to_id})
-               CREATE (a)-[r:RELATES_TO {
-                 type: $rel_type,
-                 properties: $properties, created_by: $created_by,
-                 created_at: datetime()
-               }]->(b)
-               RETURN type(r)`,
+							return missingParams("create", [
+								"from_id",
+								"to_id",
+								"relationship_type",
+							]);
+						// MERGE keys on {type} only: properties is a JSON string, so
+						// including it in the merge key would create a parallel edge for
+						// every distinct payload and defeat idempotency.
+						const result = await neo4j.execute([
 							{
-								from_id: params.from_id,
-								to_id: params.to_id,
-								rel_type: params.relationship_type,
-								properties: params.properties
-									? JSON.stringify(params.properties)
-									: null,
-								created_by: params.created_by,
-							},
-						);
-						return {
-							content: [
-								{
-									type: "text" as const,
-									text: JSON.stringify({
-										created: true,
-										from: params.from_id,
-										to: params.to_id,
-										type: params.relationship_type,
-									}),
+								statement: `MATCH (a:Entity {id: $from_id}) MATCH (b:Entity {id: $to_id})
+                 MERGE (a)-[r:RELATES_TO {type: $rel_type}]->(b)
+                 ON CREATE SET r.properties = $properties,
+                               r.created_by = $created_by,
+                               r.created_at = datetime(), r._new = true
+                 WITH r, coalesce(r._new, false) AS was_created
+                 REMOVE r._new
+                 RETURN was_created`,
+								parameters: {
+									from_id: params.from_id,
+									to_id: params.to_id,
+									rel_type: params.relationship_type,
+									properties: params.properties
+										? JSON.stringify(params.properties)
+										: null,
+									created_by: params.created_by,
 								},
-							],
-						};
+							},
+							{
+								statement: `OPTIONAL MATCH (a:Entity {id: $from_id})
+                 OPTIONAL MATCH (b:Entity {id: $to_id})
+                 RETURN a.id IS NOT NULL AS from_exists, b.id IS NOT NULL AS to_exists`,
+								parameters: { from_id: params.from_id, to_id: params.to_id },
+							},
+						]);
+						if (neo4j.rowCount(result, 0) === 0) {
+							const [fromExists, toExists] = (neo4j.rows(result, 1)[0] ?? [
+								false,
+								false,
+							]) as [boolean, boolean];
+							const notFound: string[] = [];
+							if (!fromExists) notFound.push(`from_id "${params.from_id}"`);
+							if (!toExists) notFound.push(`to_id "${params.to_id}"`);
+							return err("relationship not created: entity not found", {
+								not_found: notFound,
+								suggestion: ENTITY_NOT_FOUND_SUGGESTION,
+							});
+						}
+						const wasCreated = neo4j.rows(result, 0)[0]?.[0] === true;
+						return ok({
+							created: wasCreated,
+							already_existed: !wasCreated,
+							from: params.from_id,
+							to: params.to_id,
+							type: params.relationship_type,
+						});
 					}
 
 					case "query": {
-						if (!params.node_id)
-							return {
-								content: [
-									{
-										type: "text" as const,
-										text: "Error: node_id is required for query",
-									},
-								],
-								isError: true,
-							};
+						if (!params.node_id) return missingParams("query", ["node_id"]);
 						let cypher: string;
 						if (params.direction === "outgoing") {
 							cypher = `MATCH (e:Entity {id: $node_id})-[r:RELATES_TO]->(other:Entity)`;
@@ -158,13 +173,16 @@ structural similarity. Or create SIMILAR_TO directly here if YOU have determined
                      r.properties, r.created_by,
                      CASE WHEN startNode(r) = e THEN 'outgoing' ELSE 'incoming' END AS direction
               LIMIT $limit`;
+						// limit + 1 to detect whether more rows exist beyond the page
 						const rows = await neo4j.query(cypher, {
 							node_id: params.node_id,
 							filter_rel_type: params.filter_rel_type ?? null,
-							limit: params.limit,
+							limit: params.limit + 1,
 						});
-						const rels = rows.map(
-							([id, name, type, relType, props, by, dir]) => ({
+						const hasMore = rows.length > params.limit;
+						const rels = rows
+							.slice(0, params.limit)
+							.map(([id, name, type, relType, props, by, dir]) => ({
 								entity_id: id,
 								entity_name: name,
 								entity_type: type,
@@ -172,40 +190,24 @@ structural similarity. Or create SIMILAR_TO directly here if YOU have determined
 								properties: props,
 								created_by: by,
 								direction: dir,
-							}),
-						);
-						return {
-							content: [
-								{
-									type: "text" as const,
-									text: JSON.stringify(rels, null, 2),
-								},
-							],
-						};
+							}));
+						return ok({
+							relationships: rels,
+							count: rels.length,
+							has_more: hasMore,
+						});
 					}
 
 					case "delete": {
 						if (role !== "admin") {
-							return {
-								content: [
-									{
-										type: "text" as const,
-										text: "Forbidden: relationship delete requires admin role",
-									},
-								],
-								isError: true,
-							};
+							return err("Forbidden: relationship delete requires admin role");
 						}
 						if (!params.from_id || !params.to_id || !params.relationship_type)
-							return {
-								content: [
-									{
-										type: "text" as const,
-										text: "Error: from_id, to_id, and relationship_type are required",
-									},
-								],
-								isError: true,
-							};
+							return missingParams("delete", [
+								"from_id",
+								"to_id",
+								"relationship_type",
+							]);
 						const result = await neo4j.query(
 							`MATCH (a:Entity {id: $from_id})-[r:RELATES_TO {type: $rel_type}]->(b:Entity {id: $to_id})
                DELETE r RETURN count(r) AS deleted`,
@@ -215,30 +217,15 @@ structural similarity. Or create SIMILAR_TO directly here if YOU have determined
 								rel_type: params.relationship_type,
 							},
 						);
-						return {
-							content: [
-								{
-									type: "text" as const,
-									text: JSON.stringify({
-										deleted: (result[0]?.[0] as number) > 0,
-									}),
-								},
-							],
-						};
+						return ok({
+							deleted: (result[0]?.[0] as number) > 0,
+						});
 					}
 
 					case "tag": {
 						if (!params.entity_id || !params.tag_name)
-							return {
-								content: [
-									{
-										type: "text" as const,
-										text: "Error: entity_id and tag_name are required",
-									},
-								],
-								isError: true,
-							};
-						await neo4j.query(
+							return missingParams("tag", ["entity_id", "tag_name"]);
+						const rows = await neo4j.query(
 							`MATCH (e:Entity {id: $entity_id})
                MERGE (t:Tag {name: $tag_name})
                ON CREATE SET t.tag_group = $tag_group
@@ -252,42 +239,24 @@ structural similarity. Or create SIMILAR_TO directly here if YOU have determined
 								created_by: params.created_by,
 							},
 						);
-						return {
-							content: [
-								{
-									type: "text" as const,
-									text: JSON.stringify({
-										tagged: true,
-										entity: params.entity_id,
-										tag: params.tag_name,
-									}),
-								},
-							],
-						};
+						if (!rows.length)
+							return err("entity not tagged: entity not found", {
+								not_found: [`entity_id "${params.entity_id}"`],
+								suggestion: ENTITY_NOT_FOUND_SUGGESTION,
+							});
+						return ok({
+							tagged: true,
+							entity: params.entity_id,
+							tag: params.tag_name,
+						});
 					}
 
 					case "untag": {
 						if (role !== "admin") {
-							return {
-								content: [
-									{
-										type: "text" as const,
-										text: "Forbidden: untag requires admin role",
-									},
-								],
-								isError: true,
-							};
+							return err("Forbidden: untag requires admin role");
 						}
 						if (!params.entity_id || !params.tag_name)
-							return {
-								content: [
-									{
-										type: "text" as const,
-										text: "Error: entity_id and tag_name are required",
-									},
-								],
-								isError: true,
-							};
+							return missingParams("untag", ["entity_id", "tag_name"]);
 						await neo4j.query(
 							`MATCH (e:Entity {id: $entity_id})-[r:TAGGED_WITH]->(t:Tag {name: $tag_name})
                DELETE r RETURN count(r)`,
@@ -296,32 +265,17 @@ structural similarity. Or create SIMILAR_TO directly here if YOU have determined
 								tag_name: params.tag_name,
 							},
 						);
-						return {
-							content: [
-								{
-									type: "text" as const,
-									text: JSON.stringify({
-										untagged: true,
-										entity: params.entity_id,
-										tag: params.tag_name,
-									}),
-								},
-							],
-						};
+						return ok({
+							untagged: true,
+							entity: params.entity_id,
+							tag: params.tag_name,
+						});
 					}
 
 					case "source": {
 						if (!params.entity_id || !params.source_id)
-							return {
-								content: [
-									{
-										type: "text" as const,
-										text: "Error: entity_id and source_id are required",
-									},
-								],
-								isError: true,
-							};
-						await neo4j.query(
+							return missingParams("source", ["entity_id", "source_id"]);
+						const rows = await neo4j.query(
 							`MATCH (e:Entity {id: $entity_id}), (s:Source {id: $source_id})
                MERGE (e)-[r:SOURCED_FROM]->(s)
                SET r.confidence = $confidence, r.excerpt = $excerpt,
@@ -335,41 +289,26 @@ structural similarity. Or create SIMILAR_TO directly here if YOU have determined
 								created_by: params.created_by,
 							},
 						);
-						return {
-							content: [
-								{
-									type: "text" as const,
-									text: JSON.stringify({
-										linked: true,
-										entity: params.entity_id,
-										source: params.source_id,
-									}),
-								},
-							],
-						};
+						if (!rows.length)
+							return err("source not linked: entity or source not found", {
+								not_found: [
+									`entity_id "${params.entity_id}" and/or source_id "${params.source_id}"`,
+								],
+								suggestion:
+									"Verify both ids exist via entity(get) and source(get)",
+							});
+						return ok({
+							linked: true,
+							entity: params.entity_id,
+							source: params.source_id,
+						});
 					}
 
 					default:
-						return {
-							content: [
-								{
-									type: "text" as const,
-									text: `Unknown action: ${params.action}`,
-								},
-							],
-							isError: true,
-						};
+						return err(`Unknown action: ${params.action}`);
 				}
 			} catch (error) {
-				return {
-					content: [
-						{
-							type: "text" as const,
-							text: `Relate error: ${error instanceof Error ? error.message : String(error)}`,
-						},
-					],
-					isError: true,
-				};
+				return toolError("Relate", error);
 			}
 		},
 	);

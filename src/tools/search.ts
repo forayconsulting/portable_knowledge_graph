@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { buildPropertyFilter } from "../neo4j/properties";
+import { paginated, toolError } from "../shared/responses";
 import type { SessionContext } from "../shared/types";
 
 export function registerSearchTool(server: McpServer, ctx: SessionContext) {
@@ -78,13 +79,18 @@ use the vector_search tool instead.`,
 						namespace: namespace ?? null,
 						tag: tag ?? null,
 						offset,
-						limit,
+						// limit + 1 to detect more pages. A true total_count would
+						// re-run the full-text query (tag filtering happens after
+						// collect), so it is intentionally omitted here.
+						limit: limit + 1,
 						...pf.params,
 					},
 				);
 
-				const results = rows.map(
-					([id, name, type, ns, excerpt, tags, score]) => ({
+				const hasMore = rows.length > limit;
+				const results = rows
+					.slice(0, limit)
+					.map(([id, name, type, ns, excerpt, tags, score]) => ({
 						id,
 						name,
 						entity_type: type,
@@ -92,24 +98,11 @@ use the vector_search tool instead.`,
 						excerpt,
 						tags,
 						score,
-					}),
-				);
+					}));
 
-				return {
-					content: [
-						{ type: "text" as const, text: JSON.stringify(results, null, 2) },
-					],
-				};
+				return paginated(results, { offset, limit, has_more: hasMore });
 			} catch (error) {
-				return {
-					content: [
-						{
-							type: "text" as const,
-							text: `Search error: ${error instanceof Error ? error.message : String(error)}`,
-						},
-					],
-					isError: true,
-				};
+				return toolError("Search", error);
 			}
 		},
 	);

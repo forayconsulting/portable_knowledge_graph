@@ -8,6 +8,7 @@ import type { GraphRegistry } from "./registry/graph-registry";
 import { registerResources } from "./resources/schema";
 import { decrypt } from "./shared/crypto";
 import {
+	ANALYZE_ACTIONS,
 	ENTITY_ACTIONS,
 	NAMESPACE_ACTIONS,
 	ONTOLOGY_ACTIONS,
@@ -88,9 +89,9 @@ export class KnowledgeGraphMCP extends McpAgent<
 		registerSearchTool(this.server, ctx);
 		registerVectorSearchTool(this.server, ctx);
 		registerTraverseTool(this.server, ctx);
-		registerAnalyzeTool(this.server, ctx);
 
 		// Multi-action tools with role-filtered actions
+		registerAnalyzeTool(this.server, ctx, ANALYZE_ACTIONS[role]);
 		registerEntityTool(this.server, ctx, ENTITY_ACTIONS[role]);
 		registerRelateTool(this.server, ctx, RELATE_ACTIONS[role]);
 		registerSourceTool(this.server, ctx, SOURCE_ACTIONS[role]);

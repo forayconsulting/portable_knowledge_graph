@@ -46,7 +46,7 @@ Three roles control what each user can do:
 
 - **Reader.** Search, traverse, and analyze the graph. Cannot modify anything.
 - **Writer.** Everything a reader can do, plus create and update entities, ingest documents, manage sources, and extend the ontology.
-- **Admin.** Everything a writer can do, plus delete entities, run raw Cypher, and tear down namespaces.
+- **Admin.** Everything a writer can do, plus delete entities, merge duplicates, run raw Cypher, and tear down namespaces.
 
 Permissions are stored per graph as a map from email addresses or domain patterns to roles. The owner of a graph is always an admin. An entry like `@acme.com: writer` gives writer access to everyone at that domain. Graphs can set a default role for any authenticated user, or leave it null to make the graph invite-only.
 
@@ -62,7 +62,11 @@ Every entity carries three fields that track how well-supported it is. The `epis
 
 ## Tools
 
-Ten tools cover the full lifecycle of knowledge. `search` and `traverse` handle finding and exploring. `entity` and `relate` handle reading and writing nodes and edges. `ingest` handles bulk operations. `ontology` handles schema introspection and extension. `analyze` runs structural queries like shortest paths, similarity, degree analysis, and epistemic gaps. `source` tracks where knowledge came from. `namespace` manages workspace partitions. `admin` provides health checks and raw Cypher when you need it.
+Eleven tools cover the full lifecycle of knowledge. `search` and `vector_search` handle keyword and semantic discovery (embeddings are client-supplied, keeping the server free of AI). `traverse` explores neighborhoods. `entity` and `relate` handle reading and writing nodes and edges, including an admin-only `entity(merge)` that absorbs a duplicate entity and rewires all of its relationships, tags, and source links onto the survivor. `ingest` handles bulk operations. `ontology` handles schema introspection and extension. `analyze` runs structural queries like shortest paths, similarity, degree analysis, and epistemic gaps, plus graph hygiene: `validate` reports schema drift (types, relationship types, and namespaces used in the graph but missing from the ontology) and `find_duplicates` groups entities by normalized name so Claude can decide what to merge. `source` tracks where knowledge came from. `namespace` manages workspace partitions. `admin` provides health checks and raw Cypher when you need it.
+
+Writes are honest and idempotent. Relationship creation uses MERGE semantics, so retries never duplicate edges, and re-creating an existing edge reports `already_existed` instead of pretending it was new. If a referenced entity does not exist, the tool says exactly which one rather than silently writing nothing. Bulk ingest reports created, skipped, and unmatched items per call, and a mid-run failure returns which entities committed so the rest can be retried safely.
+
+Responses are shaped for an LLM client. List and search results carry pagination metadata (`total_count`, `has_more`), entity reads never ship raw embedding vectors back (a `has_embedding` flag stands in for the floats), a `detail: "compact"` option trims responses further, and every error names what was looked up and suggests a next step so Claude can self-correct.
 
 MCP Resources give Claude automatic context about the graph's current shape, and workflow Prompts encode common patterns like document ingestion and topic research.
 
