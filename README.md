@@ -24,6 +24,19 @@ Each client graph is its own Railway project running its own Neo4j instance. Thi
 
 The MCP Worker handles all Claude connections. The graph ID lives in the URL path (`/mcp/acme-q3-audit`), so each Claude connector points at exactly one graph. Users with access to several graphs simply configure several connectors and scope conversations by toggling them on and off.
 
+### Per-graph endpoints
+
+Every graph the factory provisions is reachable at two sibling paths on the same MCP Worker, keyed by the graph ID chosen at `POST /graphs`:
+
+| Path | Audience | Purpose |
+|---|---|---|
+| `/mcp/{graph-id}` | Claude (MCP clients) | Full tool surface over Streamable HTTP, OAuth-authenticated |
+| `/viz/{graph-id}` | Humans (browsers) | Read-only live visualizer, Cloudflare Access session |
+
+Both paths resolve the graph the same way on every request: look up the ID in the registry, confirm the graph is ready, resolve the caller's role from the same permission map, and decrypt the Neo4j credentials in memory. Nothing is provisioned per graph beyond the Neo4j instance itself; the routes exist the moment the registry record does. The reserved ID `default` maps both paths to the single-tenant fallback instance configured by environment variables.
+
+The two paths are connected at runtime: tool calls arriving via `/mcp/{graph-id}` emit events to that graph's hub, and any browser sitting on `/viz/{graph-id}` sees them live. One graph, one registry record, two views: a machine interface for building knowledge and a human interface for watching it happen.
+
 ## Automated provisioning
 
 A Factory Worker exposes a REST API for the full graph lifecycle. `POST /graphs` with an ID and display name, and a Cloudflare Workflow creates the Railway project, deploys Neo4j, configures the environment, waits for health, bootstraps the schema, encrypts credentials, and marks the graph ready. The whole process takes a few minutes and reports its progress step by step through `GET /graphs/{id}`.
@@ -69,6 +82,20 @@ Writes are honest and idempotent. Relationship creation uses MERGE semantics, so
 Responses are shaped for an LLM client. List and search results carry pagination metadata (`total_count`, `has_more`), entity reads never ship raw embedding vectors back (a `has_embedding` flag stands in for the floats), a `detail: "compact"` option trims responses further, and every error names what was looked up and suggests a next step so Claude can self-correct.
 
 MCP Resources give Claude automatic context about the graph's current shape, and workflow Prompts encode common patterns like document ingestion and topic research.
+
+## Live graph visualizer
+
+![Playback of a knowledge graph being rebuilt in fast-forward: the scrubber at the bottom steps through creation timestamps while nodes and edges appear in place](docs/visualizer-playback.png)
+
+Every graph ships with a web viewer at `/viz/{graph-id}` on the same Worker that serves MCP (see [per-graph endpoints](#per-graph-endpoints)). Because the route is multi-tenant like `/mcp/{graph-id}`, a freshly provisioned graph gets its viewer with zero extra setup. It sits behind the same Cloudflare Access wall and the same reader/writer/admin roles, and it is strictly read-only: a lens on the graph, not a second write path.
+
+Three things make it more than a pretty picture:
+
+- **Watch Claude work.** Every MCP tool call against the graph is instrumented at the server. The viewer holds a WebSocket to a per-graph hub and pulses the exact nodes and edges each call touched, as it happens. Expanding an entry in the activity feed shows the call's arguments and the literal Cypher that ran against the database, so there is never a question about what the tool did or why. Instrumentation is best-effort by construction: it cannot fail, slow, or alter a tool call, and events are ephemeral apart from a small recent-activity buffer replayed to newly connected viewers.
+- **Replay growth.** Entities and relationships carry `created_at` from birth, so the viewer can animate the graph's population in fast-forward: scrubber, speed control, a date ticker, and an even-spacing mode for bursty ingest histories.
+- **Inspect anything.** Clicking a node opens a panel with its identity, epistemic status, and confidence up front, then progressive disclosure of content, properties, tags, sources with excerpts, and clickable relationships. Evidence is presented as stored; interpretation stays with the reader.
+
+The frontend lives in `viz-app/` (Vite, Preact, sigma.js WebGL rendering with force-directed layout in a web worker, about 61 KB gzipped) and is built into the Worker's static assets at deploy time. The event pipeline lives in `src/viz/`: a wrapper around tool registration extracts touched node and edge ids from each result, an `AsyncLocalStorage` hook in the Neo4j client captures Cypher, and a `VizHub` Durable Object per graph fans events out over hibernatable WebSockets.
 
 ## Getting started
 

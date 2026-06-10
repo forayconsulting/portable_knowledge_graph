@@ -19,6 +19,7 @@ jobs:
       - run: npm run lint
       - run: npx tsc --noEmit
       - run: npm test
+      - run: npm run build:viz
 
   deploy:
     needs: check
@@ -36,6 +37,8 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      - name: Build viz frontend (served by MCP Worker assets)
+        run: npm run build:viz
       - name: Deploy MCP Worker
         run: npx wrangler deploy
         env:

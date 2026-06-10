@@ -1,0 +1,24 @@
+{
+	"name": "kg-viz",
+	"private": true,
+	"version": "1.0.0",
+	"type": "module",
+	"scripts": {
+		"dev": "vite",
+		"build": "tsc --noEmit && vite build",
+		"preview": "vite preview"
+	},
+	"dependencies": {
+		"@preact/signals": "^2.0.0",
+		"graphology": "^0.26.0",
+		"graphology-layout": "^0.6.1",
+		"graphology-layout-forceatlas2": "^0.10.1",
+		"preact": "^10.24.0",
+		"sigma": "^3.0.0"
+	},
+	"devDependencies": {
+		"@preact/preset-vite": "^2.9.0",
+		"typescript": "^5.8.3",
+		"vite": "^6.0.0"
+	}
+}

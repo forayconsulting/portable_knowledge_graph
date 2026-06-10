@@ -57,7 +57,10 @@ curl https://kg-factory.<your-domain>.workers.dev/health
 ## 3. Deploy the MCP Worker (second)
 
 ```bash
-npx wrangler deploy
+npm run deploy
+# Builds the viz frontend (viz-app/ -> public/viz) and then runs wrangler deploy.
+# If deploying with npx wrangler deploy directly, run `npm run build:viz` first
+# or the assets upload will ship a stale/missing viz bundle.
 ```
 
 ### Set MCP Worker secrets
@@ -72,6 +75,10 @@ npx wrangler secret put GRAPH_ENCRYPTION_KEY
 ```bash
 curl https://kg-mcp.<your-domain>.workers.dev/health
 # Expected: {"status":"ok","neo4j":"connected","version":"5.x.x",...}
+
+curl -s -o /dev/null -w "%{http_code}" https://kg-mcp.<your-domain>.workers.dev/viz/api/default/meta
+# Expected: 401 until the /viz Access destination from step 4 exists,
+# then 200 when opened from an Access-authenticated browser session.
 ```
 
 ## 4. Configure Cloudflare Access
@@ -82,8 +89,9 @@ Both workers need to be behind the same Cloudflare Access application so that au
 
 1. Open **https://one.dash.cloudflare.com** → Zero Trust → Access controls → Applications
 2. Create a **Self-hosted** application (or edit an existing one)
-3. Add two **Destinations** (public hostnames):
+3. Add three **Destinations** (public hostnames):
    - `kg-mcp.<your-domain>.workers.dev` with path `/authorize`
+   - `kg-mcp.<your-domain>.workers.dev` with path `/viz` (the graph visualizer — without this destination, `/viz` requests carry no Access email header and return 401; if subpaths like `/viz/<graph-id>` are not intercepted, use path `viz*` instead)
    - `kg-factory.<your-domain>.workers.dev` (no path — protect all routes)
 4. Add an **Allow** policy for your email domain (e.g., "Emails ending in @yourcompany.com")
 5. Save

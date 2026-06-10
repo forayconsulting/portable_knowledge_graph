@@ -1,3 +1,4 @@
+import { recordStatements } from "../viz/trace";
 import type { Neo4jResponse, Neo4jStatement } from "./types";
 
 export interface Neo4jClientOpts {
@@ -19,6 +20,10 @@ export class Neo4jClient {
 	}
 
 	async execute(statements: Neo4jStatement[]): Promise<Neo4jResponse> {
+		// No-op unless a viz trace is active (see src/viz/trace.ts)
+		recordStatements(
+			statements.map((s) => ({ statement: s.statement, params: s.parameters })),
+		);
 		const res = await fetch(this.url, {
 			method: "POST",
 			headers: {

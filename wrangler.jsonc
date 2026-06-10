@@ -26,6 +26,10 @@
 				"name": "GRAPH_REGISTRY",
 				"class_name": "GraphRegistry",
 				"script_name": "kg-factory"
+			},
+			{
+				"name": "VIZ_HUB",
+				"class_name": "VizHub"
 			}
 		]
 	},
@@ -34,8 +38,18 @@
 		{
 			"tag": "v1",
 			"new_sqlite_classes": ["KnowledgeGraphMCP"]
+		},
+		{
+			"tag": "v2",
+			"new_sqlite_classes": ["VizHub"]
 		}
 	],
+
+	"assets": {
+		"directory": "./public/viz",
+		"binding": "ASSETS",
+		"run_worker_first": true
+	},
 
 	"observability": {
 		"enabled": true

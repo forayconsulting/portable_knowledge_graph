@@ -28,6 +28,11 @@ import { registerSearchTool } from "./tools/search";
 import { registerSourceTool } from "./tools/source";
 import { registerTraverseTool } from "./tools/traverse";
 import { registerVectorSearchTool } from "./tools/vector-search";
+import { handleVizRequest } from "./viz/api";
+import { type VizEmitter, wrapServerForViz } from "./viz/events";
+import type { VizHub } from "./viz/hub";
+
+export { VizHub } from "./viz/hub";
 
 export class KnowledgeGraphMCP extends McpAgent<
 	Env,
@@ -82,28 +87,54 @@ export class KnowledgeGraphMCP extends McpAgent<
 		return { neo4j, role: "admin", email, graphId: "" };
 	}
 
+	/**
+	 * Best-effort emitter publishing tool-call events to the per-graph VizHub
+	 * so connected viz clients can highlight what Claude is examining. Never
+	 * throws and never blocks the tool call.
+	 */
+	private buildVizEmitter(ctx: SessionContext): VizEmitter | null {
+		if (!this.env.VIZ_HUB) return null;
+		// Single-tenant fallback sessions (graphId "") share the reserved
+		// "default" hub, matching the /viz/default viewer route.
+		const hubId = this.env.VIZ_HUB.idFromName(ctx.graphId || "default");
+		const hub = this.env.VIZ_HUB.get(hubId) as DurableObjectStub & VizHub;
+		return (event) => {
+			const delivery = hub.publish(event).catch(() => {});
+			this.ctx?.waitUntil?.(delivery);
+		};
+	}
+
 	private registerToolsForRole(ctx: SessionContext) {
 		const { role } = ctx;
 
+		const emit = this.buildVizEmitter(ctx);
+		const server = emit
+			? wrapServerForViz(this.server, {
+					graphId: ctx.graphId || "default",
+					email: ctx.email,
+					emit,
+				})
+			: this.server;
+
 		// Always registered (all roles)
-		registerSearchTool(this.server, ctx);
-		registerVectorSearchTool(this.server, ctx);
-		registerTraverseTool(this.server, ctx);
+		registerSearchTool(server, ctx);
+		registerVectorSearchTool(server, ctx);
+		registerTraverseTool(server, ctx);
 
 		// Multi-action tools with role-filtered actions
-		registerAnalyzeTool(this.server, ctx, ANALYZE_ACTIONS[role]);
-		registerEntityTool(this.server, ctx, ENTITY_ACTIONS[role]);
-		registerRelateTool(this.server, ctx, RELATE_ACTIONS[role]);
-		registerSourceTool(this.server, ctx, SOURCE_ACTIONS[role]);
-		registerOntologyTool(this.server, ctx, ONTOLOGY_ACTIONS[role]);
-		registerNamespaceTool(this.server, ctx, NAMESPACE_ACTIONS[role]);
+		registerAnalyzeTool(server, ctx, ANALYZE_ACTIONS[role]);
+		registerEntityTool(server, ctx, ENTITY_ACTIONS[role]);
+		registerRelateTool(server, ctx, RELATE_ACTIONS[role]);
+		registerSourceTool(server, ctx, SOURCE_ACTIONS[role]);
+		registerOntologyTool(server, ctx, ONTOLOGY_ACTIONS[role]);
+		registerNamespaceTool(server, ctx, NAMESPACE_ACTIONS[role]);
 
 		// Single-tier tools
 		if ((TOOL_ACCESS.ingest as readonly Role[]).includes(role)) {
-			registerIngestTool(this.server, ctx);
+			registerIngestTool(server, ctx);
 		}
 		if ((TOOL_ACCESS.admin as readonly Role[]).includes(role)) {
-			registerAdminTool(this.server, ctx);
+			registerAdminTool(server, ctx);
 		}
 
 		// Resources and prompts
@@ -167,6 +198,10 @@ const providerOptions: OAuthProviderOptions<Env> = {
 
 			if (url.pathname === "/health") {
 				return handleHealth(env);
+			}
+
+			if (url.pathname === "/viz" || url.pathname.startsWith("/viz/")) {
+				return handleVizRequest(request, env);
 			}
 
 			if (url.pathname === "/authorize") {

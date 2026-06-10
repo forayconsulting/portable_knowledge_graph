@@ -5,7 +5,8 @@
 	"main": "src/index.ts",
 	"scripts": {
 		"dev": "wrangler dev",
-		"deploy": "wrangler deploy",
+		"build:viz": "npm --prefix viz-app ci --silent && npm --prefix viz-app run build",
+		"deploy": "npm run build:viz && wrangler deploy",
 		"types": "wrangler types",
 		"test": "vitest run",
 		"test:watch": "vitest",

@@ -57,6 +57,37 @@ fi
 echo ""
 
 # --------------------------------------------------------------------------
+# Step 1b: Create the Access Application for the graph visualizer (/viz)
+# --------------------------------------------------------------------------
+echo "--- Step 1b: Create Access Application for the visualizer ---"
+echo ""
+
+if npx wrangler zero-trust access applications create \
+  --name "Knowledge Graph Viz" \
+  --domain "${WORKER_DOMAIN}/viz" \
+  --type self-hosted \
+  --session-duration "24h" 2>/dev/null; then
+  echo "  Viz Access Application created via CLI."
+else
+  echo "  CLI command not available or failed. Create manually:"
+  echo ""
+  echo "  1. Open https://one.dash.cloudflare.com → Zero Trust → Access → Applications"
+  echo "  2. Click 'Add an application' → 'Self-hosted'"
+  echo "  3. Set:"
+  echo "     - Application name:  Knowledge Graph Viz"
+  echo "     - Session duration:  24 hours"
+  echo "     - Application domain: ${WORKER_DOMAIN}"
+  echo "     - Path:              /viz"
+  echo "       (verify subpaths are covered after saving — if /viz/<graph-id>"
+  echo "        is not intercepted by Access, change the path to: viz*)"
+  echo "  4. Attach the same 'Allow company emails' policy as the MCP app"
+  echo "  5. Click 'Next' → 'Add application'"
+  echo ""
+  echo "  Without this app, /viz requests have no Access email header and 401."
+fi
+echo ""
+
+# --------------------------------------------------------------------------
 # Step 2: Create the Access Policy (via CLI if available)
 # --------------------------------------------------------------------------
 echo "--- Step 2: Create Access Policy ---"
